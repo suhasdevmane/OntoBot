@@ -122,6 +122,7 @@ Transformers/my_data.json
 /rasa-ui011020250200.zip
 ./temp_build_extended_dataset.py
 brick assets/
+assets/
 ##############################
 # Secrets & credentials
 ##############################
