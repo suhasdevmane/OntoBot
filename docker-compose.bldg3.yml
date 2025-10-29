@@ -169,7 +169,7 @@ services:
       - ontobot-network
     depends_on:
       - decider-service
-      - mysql
+      # MySQL service is not defined in this stack; remove dependency to avoid invalid compose project
 
   duckling_server:
     image: rasa/duckling:latest
@@ -368,22 +368,22 @@ services:
   #     - ontobot-network
 
   # # Legacy MySQL (if needed by actions or migration scripts)
-  # mysql:
-  #   image: mysql:8
-  #   container_name: mysqlserver
-  #   restart: always
-  #   hostname: mysqlserver
-  #   environment:
-  #     - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-mysql}
-  #     - MYSQL_DATABASE=${DB_NAME:-sensordb}
-  #     - MYSQL_USER=${MYSQL_APP_USER:-thingsboard}
-  #     - MYSQL_PASSWORD=${MYSQL_APP_PASSWORD:-thingsboard}
-  #   ports:
-  #     - "3308:3306"
-  #   volumes:
-  #     - mysql-data:/var/lib/mysql
-  #   networks:
-  #     - ontobot-network
+  mysql:
+    image: mysql:8
+    container_name: mysqlserver
+    restart: always
+    hostname: mysqlserver
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-mysql}
+      - MYSQL_DATABASE=${DB_NAME:-sensordb}
+      - MYSQL_USER=${MYSQL_APP_USER:-thingsboard}
+      - MYSQL_PASSWORD=${MYSQL_APP_PASSWORD:-thingsboard}
+    ports:
+      - "3308:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - ontobot-network
 
 
   ollama:

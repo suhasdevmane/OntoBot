@@ -1,4 +1,4 @@
-# Synthetic Building 2 (bldg3)
+# Synthetic Building (bldg3)
 
 This folder contains a synthetic building configuration used to validate OntoBot’s multi‑building workflow. It mirrors the Abacws pattern but uses Cassandra for telemetry storage and focuses on Brick 1.4 TTLs created with Protégé/Brickly and Python brickschema utilities.
 

@@ -703,6 +703,64 @@ docker-compose down
 
 Copy `.env.example` to `.env` and adjust as needed. Key variables used by the Action Server and other services:
 
+### Using docker-compose with environment variables
+
+This project uses environment variables in the `docker-compose.*.yml` files. Follow these steps to safely provide secrets and configuration when running Compose locally:
+
+1) Create a local `.env` from `.env.example`
+
+- Copy the template and edit it locally (do NOT commit `.env`):
+
+```powershell
+Copy-Item -Path .env.example -Destination .env
+# Open .env and replace placeholder values with your real credentials
+```
+
+- Keep `.env` in `.gitignore`. Never commit production secrets.
+
+2) Validate before starting
+
+- Show the normalized config and check for missing variables/warnings:
+
+```powershell
+docker compose --env-file .env -f docker-compose.bldg1.yml config
+```
+
+- If you see warnings like "The \"PG_THINGSBOARD_DB\" variable is not set.", add that variable to `.env` and re-run the command.
+
+3) Start the chosen compose file
+
+- Building 1 (example):
+
+```powershell
+docker compose --env-file .env -f docker-compose.bldg1.yml up -d --build
+```
+
+- With extras overlay:
+
+```powershell
+docker compose --env-file .env -f docker-compose.bldg1.yml -f docker-compose.extras.yml up -d --build
+```
+
+4) Alternative approaches
+
+- Per-shell variables (temporary for current PowerShell session):
+
+```powershell
+$env:PG_THINGSBOARD_PASSWORD = 'verysecret'
+docker compose -f docker-compose.bldg1.yml up -d --build
+```
+
+- Explicit env file (if you maintain multiple files):
+
+```powershell
+docker compose --env-file .env.bldg1 -f docker-compose.bldg1.yml up -d --build
+```
+
+Notes
+- Compose files commonly reference: API_* (Postgres/MySQL), PG_THINGSBOARD_*, MYSQL_*, ACTION_DB_*, JWT_SECRET, FUSEKI_ADMIN_PASSWORD, PGADMIN_DEFAULT_*. If you enable the extras overlay, also set GRAPHDB_PASSWORD and JUPYTER_TOKEN.
+- For production, prefer secret managers (GitHub Actions secrets, cloud secret management, Docker/K8s secrets) instead of plaintext `.env` files.
+
 ### Core Service URLs
 
 ```bash

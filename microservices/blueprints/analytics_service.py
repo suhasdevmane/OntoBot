@@ -1611,17 +1611,16 @@ def analyze_formaldehyde_levels(
     Expected input (as a Python dict or JSON string):
       {
          "1": {
-             "Formaldehyde_Level_Sensor": {
+             "Formaldehyde_Level_Sensor1": {
                  "timeseries_data": [
                      {"datetime": "2025-02-10 05:31:59", "reading_value": 0.08},
                      {"datetime": "2025-02-10 05:32:11", "reading_value": 0.09},
                      ...
                  ]
              },
-             "Other_Sensor": { ... }
          },
          "2": {
-             "Formaldehyde_Level_Sensor": {
+             "Formaldehyde_Level_Sensor2": {
                  "timeseries_data": [
                      {"datetime": "2025-02-10 05:35:00", "reading_value": 0.11},
                      {"datetime": "2025-02-10 05:35:12", "reading_value": 0.10},

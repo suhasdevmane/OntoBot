@@ -1,4 +1,4 @@
-# Synthetic Building 1 (bldg2)
+# Synthetic Building (bldg2)
 
 This folder contains a synthetic building configuration used to validate OntoBot’s multi‑building workflow. It mirrors the Abacws pattern but uses MySQL for telemetry storage and focuses on Brick 1.4 TTLs created with Protégé/Brickly and Python brickschema utilities.
 

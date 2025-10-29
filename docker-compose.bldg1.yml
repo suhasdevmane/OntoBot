@@ -29,34 +29,116 @@ services:
   #     - ./bldg1/servers.json:/pgadmin4/servers.json
   #   networks:
   #     - ontobot-network
+  mongo:
+    image: mongo      #or
+    container_name: abacws-chatbot-mongo
+    hostname: mongohost
+    restart: always
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - ontobot-network
+  api:
+    # image: devmanenvision/abacws-api:bldg1-2025-10-29  # Option: pull prebuilt image from Docker Hub (comment out build: below)
+    build:
+      context: ./Abacws/api
+      dockerfile: Dockerfile
+    container_name: abacws-api
+    hostname: apihost
+    environment:
+      - API_PORT=5000
+      # Choose ONE (time-series / mappings require Postgres OR MySQL):
+      # - DB_ENGINE=mongo
+      - DB_ENGINE=postgres
+      # - DB_ENGINE=mysql
+      # - DB_ENGINE=disabled
+      - PGHOST=${API_PGHOST:-postgres}
+      - PGPORT=${API_PGPORT:-5432}
+      - PGUSER=${API_PGUSER:-postgres}
+      - PGPASSWORD=${API_PGPASSWORD:-postgres}
+      - PGDATABASE=${API_PGDATABASE:-abacws}
+      # MySQL connection (used when DB_ENGINE=mysql)
+      - MYSQL_HOST=${API_MYSQL_HOST:-mysql}
+      - MYSQL_PORT=${API_MYSQL_PORT:-3306}
+      - MYSQL_USER=${API_MYSQL_USER:-root}
+      - MYSQL_PASSWORD=${API_MYSQL_PASSWORD:-mysql}
+      - MYSQL_DATABASE=${API_MYSQL_DATABASE:-abacws}
+      - API_KEY=${API_KEY:-change_me}
+    restart: always
+    depends_on:
+      - mongo
+      - postgres
+      - mysql
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./Abacws/api/src/api/data:/api/src/api/data
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "wget -qO- http://localhost:5000/health | grep -q 'ok'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ontobot-network
+
+  visualiser:
+    # image: devmanenvision/abacws-visualiser:bldg1-2025-10-29  # Option: pull prebuilt image from Docker Hub (comment out build: below)
+    build:
+      context: ./Abacws/visualiser/
+      dockerfile: Dockerfile
+    container_name: abacws-visualiser
+    hostname: visualiserhost
+    restart: always
+    depends_on:
+      - api
+    ports:
+      - "8090:80"
+    environment:
+      - WEB_PORT=80
+      - API_HOST=api:5000
+      # Optional: set to '1' to enable verbose 3D loader logging in browser console
+      - ABACWS_DEBUG=1
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.abacws-visualiser.loadbalancer.server.port=80"
+      - "traefik.http.routers.abacws-visualiser.rule=Host(`visualiser.abacws.example.com`)"
+      - "traefik.http.routers.abacws-visualiser.entrypoints=https"
+      - "traefik.http.routers.abacws-visualiser.tls=true"
+    healthcheck:
+      test: ["CMD", "sh", "-lc", "wget -qO- http://localhost/health | grep -q 'ok'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - ontobot-network
 
   postgres:
-      image: postgres:15-alpine
-      container_name: postgres
-      hostname: postgres
-      environment:
-        POSTGRES_DB: ${PG_THINGSBOARD_DB:-thingsboard}
-        POSTGRES_USER: ${PG_THINGSBOARD_USER:-thingsboard}
-        POSTGRES_PASSWORD: ${PG_THINGSBOARD_PASSWORD:-thingsboard}
-      ports:
-        - "5432:5432"
-      volumes:
-        - postgres-data:/var/lib/postgresql/data
-      networks:
-        - ontobot-network
+    image: postgres:15-alpine
+    container_name: postgres
+    hostname: postgres
+    environment:
+      - POSTGRES_DB=${PG_THINGSBOARD_DB}
+      - POSTGRES_USER=${PG_THINGSBOARD_USER}
+      - POSTGRES_PASSWORD=${PG_THINGSBOARD_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - ontobot-network
 
   mytb:
     image: devmanenvision/my-thingsboard:1.1
     container_name: thingsboard
     hostname: thingsboardhost
     depends_on:
-     - postgres
+      - postgres
     environment:
-      TB_QUEUE_TYPE: in-memory
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${PG_THINGSBOARD_DB:-thingsboard}
-      SPRING_DATASOURCE_USERNAME: ${PG_THINGSBOARD_USER:-thingsboard}
-      SPRING_DATASOURCE_PASSWORD: ${PG_THINGSBOARD_PASSWORD:-thingsboard}
-      DATABASE_TS_TYPE: sql
+      - TB_QUEUE_TYPE=in-memory
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/${PG_THINGSBOARD_DB}
+      - SPRING_DATASOURCE_USERNAME=${PG_THINGSBOARD_USER}
+      - SPRING_DATASOURCE_PASSWORD=${PG_THINGSBOARD_PASSWORD}
+      - DATABASE_TS_TYPE=sql
     ports:
       - "8082:9090"   # TB Web UI at http://localhost:8082
       - "1883:1883"
@@ -78,8 +160,8 @@ services:
     networks:
       - ontobot-network
     environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-mysql}
-      - MYSQL_DATABASE=${DB_NAME:-sensordb}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${DB_NAME}
       - MYSQL_USER=${MYSQL_APP_USER:-thingsboard}
       - MYSQL_PASSWORD=${MYSQL_APP_PASSWORD:-thingsboard}
     ports:
@@ -121,6 +203,7 @@ services:
 
   # Analytics microservices (shared)
   microservices:
+    # image: devmanenvision/microservices:bldg1-2025-10-29  # Option: pull prebuilt image from Docker Hub (comment out build: below)
     build:
       context: ./microservices
       dockerfile: Dockerfile
@@ -177,6 +260,7 @@ services:
       - ontobot-network
 
   action_server:
+    # image: devmanenvision/rasa_action_server:bldg1-2025-10-29  # Option: pull prebuilt image from Docker Hub (comment out build: below)
     build: ./rasa-bldg1/actions
     container_name: action_server_bldg1
     restart: unless-stopped
@@ -191,8 +275,8 @@ services:
       - BUNDLE_MEDIA=true
       - DB_HOST=mysqlserver
       - DB_NAME=sensordb
-      - DB_USER=root
-      - DB_PASSWORD=mysql
+      - DB_USER=${ACTION_DB_USER:-root}
+      - DB_PASSWORD=${ACTION_DB_PASSWORD:-mysql}
       - DB_PORT=3306
       - ANALYTICS_URL=http://microservices:6000/analytics/run
     ports:
@@ -268,7 +352,7 @@ services:
       - PORT=8080
       - FRONTEND_ORIGIN=http://localhost:3000
       - ALLOWED_ORIGINS=http://localhost:3000
-      - JWT_SECRET=change_me_in_prod
+      - JWT_SECRET=${JWT_SECRET:-change_me_in_prod}
       - JWT_EXPIRES_DAYS=7
       - SECURE_COOKIES=false
       - AUTO_LOAD_AFTER_TRAIN=false
@@ -285,6 +369,7 @@ services:
       - ontobot-network
 
   rasa-editor:
+    # image: devmanenvision/rasa-editor:bldg1-2025-10-29  # Option: pull prebuilt image from Docker Hub (comment out build: below)
     build:
       context: ./rasa-bldg1
       dockerfile: editor.Dockerfile
@@ -314,6 +399,7 @@ services:
       - ontobot-network
 
   rasa-frontend:
+    # image: devmanenvision/rasa-web-ui:bldg1-2025-10-29  # Option: pull prebuilt image from Docker Hub (comment out build: below)
     build:
       context: ./rasa-frontend
       dockerfile: Dockerfile
@@ -334,6 +420,7 @@ services:
       - ontobot-network
 
   decider-service:
+    # image: devmanenvision/decider-service:bldg1-2025-10-29  # Option: pull prebuilt image from Docker Hub (comment out build: below)
     build: ./decider-service
     container_name: decider_service
     restart: unless-stopped
@@ -345,6 +432,7 @@ services:
       - ontobot-network
 
   nl2sparql:
+    # image: devmanenvision/nl2sparql:bldg1-2025-10-29  # Option: pull prebuilt image from Docker Hub (comment out build: below)
     build:
       context: ./Transformers/t5_base/trained
     ports:
@@ -367,39 +455,40 @@ services:
     networks:
       - ontobot-network
 
-  # ollama:
-  #     container_name: ollama
-  #     build:
-  #       context: ./Transformers/Mistral
-  #     pull_policy: always
-  #     restart: unless-stopped
-  #     ports:
-  #       - "11434:11434"
-  #     environment:
-  #       - OLLAMA_NUM_PARALLEL=4
-  #       - OLLAMA_MAX_LOADED_MODELS=1
-  #       - OLLAMA_MODELS=/usr/share/ollama/.ollama/models
-  #       # Space or comma separated list of models to auto-pull & optionally warm up
-  #       - AUTO_PULL_MODELS=mistral:latest
-  #       # Set to 'false' to skip warmup token generation after pull
-  #       - WARMUP_MODELS=true
-  #     healthcheck:
-  #       test: "ollama --version && ollama ps || exit 1"
-  #       interval: 30s
-  #       timeout: 180s
-  #       retries: 3
-  #       start_period: 30s
-  #     # deploy:
-  #     #   resources:
-  #     #     reservations:
-  #           # devices:
-  #           #   - driver: nvidia
-  #           #     count: 1
-  #           #     capabilities: [gpu]
-  #     volumes:
-  #       - .:/usr/share/ollama/.ollama/models
-  #     networks:
-  #       - ontobot-network
+  ollama:
+      container_name: ollama
+      # image: devmanenvision/ollama-mistral:bldg1-2025-10-29  # Option: pull prebuilt image from Docker Hub (comment out build: below)
+      build:
+        context: ./Transformers/Mistral
+      pull_policy: always
+      restart: unless-stopped
+      ports:
+        - "${OLLAMA_PORT:-11434}:11434"
+      environment:
+        - OLLAMA_NUM_PARALLEL=4
+        - OLLAMA_MAX_LOADED_MODELS=1
+        - OLLAMA_MODELS=/usr/share/ollama/.ollama/models
+        # Space or comma separated list of models to auto-pull & optionally warm up
+        - AUTO_PULL_MODELS=mistral:latest
+        # Set to 'false' to skip warmup token generation after pull
+        - WARMUP_MODELS=true
+      healthcheck:
+        test: "ollama --version && ollama ps || exit 1"
+        interval: 30s
+        timeout: 180s
+        retries: 3
+        start_period: 30s
+      # deploy:
+      #   resources:
+      #     reservations:
+            # devices:
+            #   - driver: nvidia
+            #     count: 1
+            #     capabilities: [gpu]
+      volumes:
+        - .:/usr/share/ollama/.ollama/models
+      networks:
+        - ontobot-network
 
 
   
@@ -408,6 +497,7 @@ networks:
 
 volumes:
   jena-data:
+  mongo-data:
   attachments_volume:
   mysql-data:
   # ollama-models:
@@ -420,3 +510,9 @@ volumes:
   jena-bldg1-datasets:
   jena-bldg1-backups:
   postgres-data:
+
+
+
+
+
+  ## to turn up all containers use docker compose --env-file .env -f "C:\Users\suhas\Documents\GitHub\OntoBot\docker-compose.bldg1.yml" up -d --build
