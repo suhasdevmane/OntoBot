@@ -134,8 +134,8 @@ logger = logging.getLogger(__name__)
 
 # Global constants
 # Default to internal Docker DNS names so services work inside the compose network.
-# nl2sparql_url = os.getenv("NL2SPARQL_URL", "http://nl2sparql:6005/nl2sparql") # Original internal URL
-nl2sparql_url = os.getenv("NL2SPARQL_URL", "https://deep-gator-cleanly.ngrok-free.app") # Updated to external ngrok URL for testing
+nl2sparql_url = os.getenv("NL2SPARQL_URL", "http://nl2sparql:6005/nl2sparql") # Original internal URL
+# nl2sparql_url = os.getenv("NL2SPARQL_URL", "https://deep-gator-cleanly.ngrok-free.app") # Updated to external ngrok URL for testing
 FUSEKI_URL = os.getenv("FUSEKI_URL", "http://jena-fuseki-rdf-store:3030/bldg2/sparql")
 # Where to write downloadable files. Use the shared volume so http_server can serve them.
 # Route everything through a single folder for easy sharing and cleanup.
@@ -1462,6 +1462,21 @@ class ActionQuestionToBrickbot(Action):
             events = [SlotSet("sparql_error", False)]
             if _pre_slot_events:
                 events.extend(_pre_slot_events)
+            # Helper to prefer pending SlotSet values created in this turn
+            def _pending_slot(name: str, default: Any = None) -> Any:
+                try:
+                    for ev in reversed(_pre_slot_events):
+                        # Handle dict-shaped events
+                        if isinstance(ev, dict):
+                            if ev.get("event") == "slot" and ev.get("name") == name:
+                                return ev.get("value", default)
+                        else:
+                            # Handle Rasa SlotSet event objects
+                            if getattr(ev, "key", None) == name:
+                                return getattr(ev, "value", default)
+                except Exception:
+                    pass
+                return default
             # Query the unified decider to decide if analytics should be performed and which one
             perform_analytics = None
             decided_analytics = None
@@ -1544,9 +1559,11 @@ class ActionQuestionToBrickbot(Action):
                 events.append(SlotSet("analytics_type", selected_analytics))
                 dispatcher.utter_message(text=f"Proceeding with analytics: {selected_analytics} on IDs: {timeseries_ids}")
             
-                # Refresh date slots after potential override
-                start_date = tracker.get_slot("start_date")
-                end_date = tracker.get_slot("end_date")
+                # Refresh date slots after potential override, preferring any pending SlotSets from this turn
+                start_date_tracker = tracker.get_slot("start_date")
+                end_date_tracker = tracker.get_slot("end_date")
+                start_date = _pending_slot("start_date", start_date_tracker)
+                end_date = _pending_slot("end_date", end_date_tracker)
 
                 # Add after checking if both dates are present
                 if start_date and end_date:

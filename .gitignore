@@ -41,6 +41,8 @@ abacws-chatbot-venv/
 abacws_chatbot_env/
 .rasaenv/
 .rasa/
+todos/
+papers/
 ##############################
 # Jupyter
 ##############################
@@ -179,6 +181,8 @@ working-demos/
 *.pt
 *.pth
 *.docx
+.blobs/
+blobs/
 ##############################
 # Rasa models
 ##############################

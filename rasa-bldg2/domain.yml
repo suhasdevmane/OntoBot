@@ -27,6 +27,13 @@ slots:
     mappings:
       - type: from_entity
         entity: sensor_type
+  date_range_mode:
+    type: text
+    influence_conversation: true
+    mappings:
+      - type: from_text
+        conditions:
+          - active_loop: date_range_choice_form
   analytics_type:
     type: text
     influence_conversation: true
@@ -41,7 +48,14 @@ slots:
         role: start
       - type: from_entity
         entity: time
+        role: start
+        conditions:
+          - active_loop: dates_form
+      - type: from_entity
+        entity: time
         not_intent: provide_end_date
+        conditions:
+          - active_loop: dates_form
       - type: from_intent
         intent: provide_start_date
         value: ""
@@ -54,7 +68,14 @@ slots:
         role: end
       - type: from_entity
         entity: time
+        role: end
+        conditions:
+          - active_loop: dates_form
+      - type: from_entity
+        entity: time
         not_intent: provide_start_date
+        conditions:
+          - active_loop: dates_form
       - type: from_intent
         intent: provide_end_date
         value: ""

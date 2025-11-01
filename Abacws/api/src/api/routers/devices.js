@@ -78,6 +78,13 @@ const getData = async (_req, res) => {
     return res.status(503).json({ error: 'Datastore disabled' });
   }
   const device = res.locals.device;
+  // Prefer external (MySQL sensordb) sensor values if available
+  try {
+    if (store.engine === 'mysql' && typeof store.externalLatestForDevice === 'function') {
+      const ext = await store.externalLatestForDevice(device.name);
+      if (ext) return res.status(200).json(ext);
+    }
+  } catch(_) { /* ignore and fall back */ }
   const data = await store.latestDeviceData(device.name);
   res.status(200).json(data);
 };
@@ -89,6 +96,13 @@ const getHistoricalData = async (req, res) => {
   const device = res.locals.device;
   const from = Number(req.query.from) || 0;
   const to = Number(req.query.to) || Date.now();
+  // Prefer external (MySQL sensordb) sensor history if available
+  try {
+    if (store.engine === 'mysql' && typeof store.externalHistoryForDevice === 'function') {
+      const hist = await store.externalHistoryForDevice(device.name, from, to, 10000);
+      if (hist && Array.isArray(hist)) return res.status(200).json(hist);
+    }
+  } catch(_) { /* ignore and fall back */ }
   const history = await store.deviceHistory(device.name, from, to, 10000);
   res.status(200).json(history);
 };

@@ -13,28 +13,7 @@ intents:
   - provide_start_date
   - provide_end_date
   - test_action_server
-  - action_debug_entities
-  - describe_sensor_formaldehyde_5_23
-  - list_co2_sensors_east_zone
-  - check_air_quality_recommendations
-  - analyze_recalibration_co2_5_01
-  - analyze_failure_trends_humidity_5_02
-  - analyze_deviation_temperature_5_08
-  - check_status_illuminance_5_02
-  - analyze_air_quality_trends_5_01
-  - check_humidity_5_05
-  - locate_lpg_sensor_5_32
-  - analyze_co_trends_5_02
-  - aggregate_formaldehyde_5_01
-  - correlate_temperature_5_01_5_02
-  - compute_air_quality_index_feb_2025
-  - detect_anomalies_noise_5_02
-  - analyze_noise_levels_5_01
-  - analyze_air_quality_5_02
-  - analyze_formaldehyde_5_02
-  - analyze_temperature_humidity_5_01_5_02
-  - detect_failures_oxygen_5_02
-
+  
 entities:
   - sensor_type
   - time:
@@ -68,16 +47,12 @@ slots:
       - type: from_entity
         entity: time
         role: start
-        conditions:
-          - active_loop: dates_form
       - type: from_entity
         entity: time
-        not_intent: provide_end_date
+        role: end
         conditions:
           - active_loop: dates_form
-      - type: from_intent
-        intent: provide_start_date
-        value: ""
+          - requested_slot: start_date
   end_date:
     type: text
     influence_conversation: true
@@ -85,16 +60,12 @@ slots:
       - type: from_entity
         entity: time
         role: end
-        conditions:
-          - active_loop: dates_form
       - type: from_entity
         entity: time
-        not_intent: provide_start_date
+        role: start
         conditions:
           - active_loop: dates_form
-      - type: from_intent
-        intent: provide_end_date
-        value: ""
+          - requested_slot: end_date
   request_dates:
     type: bool
     initial_value: false
@@ -143,7 +114,7 @@ responses:
   utter_goodbye:
     - text: "Bye"
   utter_ask_sensor_type:
-    - text: "Please provide one or more valid sensor types (e.g., CO2_Level_Sensor_5.14)."
+    - text: "Please provide one or more valid sensor types (e.g., CO2_Level_Sensor or Air_Temperature_Sensor)."
   utter_ask_start_date:
     - text: "Please provide the start date (e.g., 01/02/2025 or 01/02/2025 00:00:00)."
   utter_ask_end_date:
@@ -156,46 +127,7 @@ responses:
     - text: "I am a bot, but I can help you with sensor data analysis."
   utter_no_dates_needed:
     - text: "No dates required for this query. Processing your request..."
-  utter_describe_sensor_formaldehyde_5_23:
-    - text: "The Formaldehyde_Level_Sensor_5.23 is a sensor designed to measure formaldehyde levels, a common volatile organic compound found in the air of buildings. This specific sensor is located within the north-east Zone of the building according to the provided data."
-  utter_list_co2_sensors_east_zone:
-    - text: "There are eight CO2 level sensors installed in the east-zone, namely bldg:CO_Level_Sensor_5.04, bldg:CO_Level_Sensor_5.05, bldg:CO_Level_Sensor_5.25, bldg:CO_Level_Sensor_5.28, their CO2 counterparts bldg:CO2_Level_Sensor5.04, bldg:CO2_Level_Sensor5.05, bldg:CO2_Level_Sensor5.25, and bldg:CO2_Level_Sensor5.28. These sensors monitor the carbon dioxide levels in the east-zone of the building."
-  utter_check_air_quality_recommendations:
-    - text: "The air quality in your building is within the healthy range according to the Air Quality Index (AQI) of 2.449916 for the last one month. However, it's important to note that while CO levels are still within a healthy range (2.2666666666666666), the NO2 and PM10 levels slightly exceed their respective sensors' standards: 0.085 for NO2 and 0.024 for PM10. It is recommended to monitor these two components closely to maintain optimal air quality. No immediate actions are required at this time, but regular checks and potential adjustments to your building's filtration system may be necessary in the future."
-  utter_analyze_recalibration_co2_5_01:
-    - text: "The CO2_Level_Sensor_5.01, based on its performance from January 2025 to March 2025, does not require immediate recalibration as the sensor's performance is stable with a coefficient of variation of only 0.0013. This indicates that the sensor readings are consistent and reliable, suggesting no need for calibration at this time. However, regular monitoring should continue to ensure long-term accuracy."
-  utter_analyze_failure_trends_humidity_5_02:
-    - text: "The analysis shows the failure trends for Zone_Air_Humidity_Sensor_5.02 over the last two months (February to March 2025). The mean value of humidity was 45.2, with a minimum value of 42.0 and a maximum of 48.5. The standard deviation is 2.31, and the latest recorded value is 46.8. The sensor's status indicates that the humidity level is within normal limits, as the alert shows 'Humidity normal'. Additionally, the comfort index was calculated to be 92.45, which assesses the overall environment as 'Comfortable'."
-  utter_analyze_deviation_temperature_5_08:
-    - text: "The analysis of Air_Temperature_Sensor_5.08 data between 01/02/2025 and 15/02/2025 shows that the latest reading, which is from 24th April 2025, deviates slightly from the historical mean of 29.014 degrees Celsius by -0.04 degrees Celsius. However, it remains within the normal range as indicated by the 'Within normal range.' message. The historical standard deviation was 0.025 degrees Celsius."
-  utter_check_status_illuminance_5_02:
-    - text: "The current status of Illuminance_Sensor_5.02 on 01/04/2025 is not available as the last reported data was on 02/10/2025 at 01:59:49, indicating that the sensor is online and functioning normally."
-  utter_analyze_air_quality_trends_5_01:
-    - text: "The analysis of the air quality trends for Air_Quality_Sensor_5.12, from January 1st, 2025, to March 31st, 2025, shows that there has been a downward trend in the air quality, with the latest reading being 10.12. This trend is considered normal and falls within the expected range compared to the average."
-  utter_check_humidity_5_05:
-    - text: "The current humidity reading from Air Humidity Sensor 5.05 is 45.0 at the timestamp of April 25, 2025, 11:20:11."
-  utter_locate_lpg_sensor_5_32:
-    - text: "The LPG_Natural_Gas_Town_MQ5_Gas_Sensor_5.32 is located in the West zone, specifically in Room 5.32."
-  utter_analyze_co_trends_5_02:
-    - text: "The sensor trend for CO_Level_Sensor_5.02, from 01/02/2025 to 28/02/2025, shows a decrease over the period. The initial rolling mean (average of recent readings) was 29.06 parts per million (ppm), while the latest rolling mean is 28.91 ppm. This represents a slight downward trend, with a difference of approximately -0.15 ppm between the initial and final rolling means."
-  utter_aggregate_formaldehyde_5_01:
-    - text: "The request was to aggregate the Formaldehyde Level sensor data for a four-hour interval from January 1st, 2025, to January 31st, 2025. The response provided includes the aggregated mean, standard deviation (std), minimum, and maximum levels of Formaldehyde_Level_Sensor_5.01 for each four-hour interval. The data is presented as a series of timestamps with associated statistics. This data can now be used for further analysis or visualization purposes to study the formaldehyde levels over this specified period."
-  utter_correlate_temperature_5_01_5_02:
-    - text: "Based on the provided data, it appears that there is a correlation between Air_Temperature_Sensor_5.01 and Air_Temperature_Sensor_5.02 from March 1st to March 15th, 2025. On the date of the analysis (April 25th), the values recorded were 22.14 degrees Celsius for Air_Temperature_Sensor_5.01 and 19.56 degrees Celsius for Air_Temperature_Sensor_5.02. The exact nature of this correlation, such as whether they consistently show similar or opposite trends over the specified period, would require further analysis of the full dataset."
-  utter_compute_air_quality_index_feb_2025:
-    - text: "The air quality index from February 1st to February 28th, 2025, as calculated on April 25th, 2025, is approximately 2.45 with a 'healthy' status. The components of the air quality are PM10 at 0.024, NO2 at 0.085, CO at 2.27 (rounded), and CO2 at 0.07425."
-  utter_detect_anomalies_noise_5_02:
-    - text: "Yes, there appears to be an anomaly in the Sound_Noise_Sensor_MEMS_5.02 data for February 10, 2025, as indicated by Z-scores greater than 1.5, which is typically used to identify significant differences from the mean. Specifically, the Z-score at timestamps 2025-02-10 00:00:23 and 2025-02-10 00:00:34 are higher than 1.5, suggesting unusual values in the noise level reading during that period. Further investigation might be necessary to understand the cause of these anomalies."
-  utter_analyze_noise_levels_5_01:
-    - text: "The analysis of noise levels for the Sound_Noise_Sensor_MEMS_5.01 between 10/03/2025 and 15/03/2025 shows that the average (mean) noise level was approximately 139.07 dBA with a minimum of 136.0 dBA, a maximum of 147.0 dBA, a standard deviation of 1.3158 dBA, and the latest recorded noise level is 140.0 dBA. The result indicates a high noise level, which may warrant further investigation or action to ensure compliance with relevant sound regulations."
-  utter_analyze_air_quality_5_02:
-    - text: "Based on the analysis of air quality data for Air_Quality_Sensor_5.02 from February 01, 2025 to February 15, 2025, the average air quality was approximately 10.04 and falls under the category of 'Good'. The minimum recorded value was 8.0 while the maximum was 12.0."
-  utter_analyze_formaldehyde_5_02:
-    - text: "The data analysis for the Formaldehyde_Level_Sensor_5.02 in March 2025 shows that the average (mean) formaldehyde level was 0.102476, with a minimum of 0.07 and a maximum of 0.16. The standard deviation is 0.02283063. As of the most recent reading on April 25, 2025 at 14:21:10, the formaldehyde level was 0.07. The alert status indicates that the formaldehyde level is within normal limits."
-  utter_analyze_temperature_humidity_5_01_5_02:
-    - text: "Between January 2nd and February 15th, 2025, the mean temperature for Air_Temperature_Sensor_5.01 was approximately 22.01°C, with a minimum of 21.96°C, a maximum of 23.07°C, and a standard deviation of 0.024956°C. The latest temperature reading was 22.97°C, which is within the acceptable range as indicated by the 'Temperature within range' alert."
-  utter_detect_failures_oxygen_5_02:
-    - text: "Based on the provided analysis, there are no signs of potential failures in Oxygen_O2_Percentage_Gas_Sensor_5.02 during the next 24 hours as of April 25, 2025."
+ 
 actions:
   - action_question_to_brickbot
   - action_process_timeseries

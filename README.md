@@ -38,6 +38,7 @@ A production-ready, end-to-end platform for human–building conversation: Rasa 
 
 ## Recent Highlights (Oct 2025)
 
+- ✅ **Typo-Tolerant Sensor Resolution** - Automatic correction of sensor name typos, spaces, and formatting errors using fuzzy matching
 - ✅ **Multi-building dataset generation & merge tooling** (bldg1, bldg2, bldg3) with raw + deduplicated outputs and provenance
 - ✅ **Hardened T5 fine-tuning** (checkpoint-3) powering the `nl2sparql` microservice; legacy checkpoint-2 removed
 - ✅ **Automatic Ollama (Mistral)** model auto-pull & warm-up on container start
@@ -61,11 +62,12 @@ OntoBot is an intelligent conversational AI platform designed for smart building
 
 ### Key Features
 
-🎯 **Multi-Building Support**: Three example buildings(2 synthetic) with 1,606 total sensors  
+🎯 **Multi-Building Support**: Three example buildings (2 synthetic) with 1,606 total sensors  
 📊 **Advanced Analytics**: 30+ analytics types including forecasting and anomaly detection  
 🔍 **Semantic Queries**: SPARQL-powered knowledge graph exploration  
 📈 **Real-Time Monitoring**: Live sensor data with visualization  
 🤖 **Conversational Interface**: Natural language queries in plain English  
+🧠 **Typo-Tolerant**: Automatic correction of sensor name errors using fuzzy matching  
 🏗️ **Modular Architecture**: Microservices-based, easily extensible  
 🐳 **Docker-First**: Complete orchestration with Docker Compose  
 📚 **Comprehensive Documentation**: Professional README files and GitHub Pages
@@ -327,6 +329,7 @@ Comprehensive documentation is available on GitHub Pages:
 | Document | Purpose | Link |
 |----------|---------|------|
 | **Multi-Building Support** | Switching buildings, portability | [MULTI_BUILDING_SUPPORT.md](MULTI_BUILDING_SUPPORT.md) |
+| **Typo-Tolerant Sensors** | Automatic sensor name correction | [rasa-bldg1/TYPO_TOLERANT_SENSORS.md](rasa-bldg1/TYPO_TOLERANT_SENSORS.md) |
 | **Buildings Taxonomy** | Detailed building characteristics | [BUILDINGS.md](BUILDINGS.md) |
 | **Port Reference** | Complete port mapping | [PORTS.md](PORTS.md) |
 | **Analytics Deep Dive** | Analytics API details | [analytics.md](analytics.md) |

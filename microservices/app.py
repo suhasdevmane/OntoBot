@@ -7,12 +7,8 @@ def create_app():
     CORS(app)
 
     from blueprints.analytics_service import analytics_service
-    from blueprints.decider_service import decider_service
-    from blueprints.t5_training import t5_training_bp
 
     app.register_blueprint(analytics_service, url_prefix="/analytics")
-    app.register_blueprint(decider_service, url_prefix="/decider")
-    app.register_blueprint(t5_training_bp)
 
     @app.route("/")
     def index():
@@ -46,7 +42,7 @@ def create_app():
 
     @app.route("/health")
     def health():
-        return jsonify({"status": "ok", "components": ["analytics", "decider", "t5_training"]}), 200
+        return jsonify({"status": "ok", "service": "microservices", "components": ["analytics"]}), 200
 
     return app
 

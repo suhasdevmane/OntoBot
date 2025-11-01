@@ -3,22 +3,16 @@ import React from 'react';
 // Removed unused Link import to satisfy ESLint
 import './Home.css';
 import TopNav from './TopNav';
-
-
-import Apache_Jena from './imgs/Apache_Jena_1.png';
-import graphdbImg from './imgs/GraphDB-small.png';
-import thingsboardImg from './imgs/thingsboardImg.png';
-import pgImg from './imgs/pgadminvala.png';
-import adminerImg from './imgs/adminer_hosting.png';
-import visualiserImg from './imgs/bldg-removebg-preview.png';
-import jupyterImg from './imgs/jupyter-3.png';
-import apiImg from './imgs/api-removebg.png';
-import Microservicespng from './imgs/services.png';
+import Apache_Jena from './imgs/Apache_Jena.png';
+import graphdbImg from './imgs/GraphDB.png';
+import thingsboardImg from './imgs/thingsboard.png';
+import pgImg from './imgs/pgadm.png';
+import adminerImg from './imgs/adminer.png';
+import visualiserImg from './imgs/bldg.png';
+import jupyterImg from './imgs/jupyter.png';
+import apiImg from './imgs/api.png';
 import OllamaImg from './imgs/ollama.png';
-import files from './imgs/folder.png';
-import servicespic from './imgs/services.png';
-import RasaLogo2 from './imgs/chatbot.png';
-import nl2sparql from './imgs/nl2sparql.png';
+import sparqlimg from './imgs/sparql.png';
 // Reuse existing API icons for services without specific logos
 
 
@@ -31,27 +25,21 @@ export default function Home() {
     { img: graphdbImg,     title: "GraphDB",            text: "Graph DBMS for SPARQL",            url: "http://localhost:7200",  width:  "70%", height: "150px" },
 
     // IoT Platform & DB Tools
-    { img: thingsboardImg, title: "ThingsBoard Server", text: "IoT Platform",                      url: "http://localhost:8082", width:  "70%", height: "150px" },
-    { img: pgImg,          title: "pgAdmin",            text: "Database Management",               url: "http://localhost:5050",  width:  "70%", height: "150px" },
-    { img: adminerImg,     title: "Adminer",            text: "Database Management",               url: "http://localhost:8282",  width:  "70%", height: "150px" },
+  { img: thingsboardImg, title: "ThingsBoard Server", text: "IoT Platform",                      url: "http://localhost:8082",  width:  "70%", height: "150px" },
+  { img: pgImg,          title: "pgAdmin",            text: "Database Management",               url: "http://localhost:5050",  width:  "70%", height: "150px" },
+  { img: adminerImg,     title: "Adminer",            text: "Database Management",               url: "http://localhost:8282",  width:  "70%", height: "150px" },
 
     // Frontend & Notebooks
-    { img: visualiserImg,  title: "3D-Abacws Service",  text: "3D Visualization",                  url: "http://localhost:8090",  width:  "70%", height: "150px" },
-    { img: jupyterImg,     title: "Jupyter Notebook",   text: "Notebooks for data analysis",       url: "http://localhost:8888",  width:  "70%", height: "150px" },
+  { img: visualiserImg,  title: "3D-Abacws Service",  text: "3D Visualization",                  url: "http://localhost:8090",  width:  "70%", height: "150px" },
+  { img: jupyterImg,     title: "Jupyter Notebook",   text: "Notebooks for data analysis",       url: "http://localhost:8888",  width:  "70%", height: "150px" },
 
     // APIs and Microservices
-    { img: apiImg,         title: "3D-API",             text: "API for 3D Services",               url: "http://localhost:8091",  width:  "70%", height: "150px" },
-    { img: Microservicespng,title: "Microservices",      text: "Analytics and utilities",           url: "http://localhost:6001",  width:  "70%", height: "150px" },
-    { img: files,         title: "File Server",        text: "Shared artifacts server",           url: "http://localhost:8080",  width:  "70%", height: "150px" },
+  { img: apiImg,         title: "3D-API",             text: "API for 3D Services",               url: "http://localhost:8091",  width:  "70%", height: "150px" },
 
-    // Conversational stack
-    { img: RasaLogo2,        title: "Rasa Server",        text: "Conversational AI",                 url: "http://localhost:5005",  width:  "70%", height: "150px" },
-    { img: servicespic,      title: "Action Server",      text: "Rasa custom actions",               url: "http://localhost:5055",  width:  "70%", height: "150px" },
-    { img: servicespic,      title: "Duckling",           text: "Entity extraction service",         url: "http://localhost:8000",  width:  "70%", height: "150px" },
-
-    // AI services
-    { img: nl2sparql,           title: "NL2SPARQL",          text: "Natural language → SPARQL",         url: "http://localhost:6005",  width:  "70%", height: "150px" },
-    { img: OllamaImg,           title: "Ollama (Mistral)",   text: "Local LLM service",                 url: "http://localhost:11434", width:  "70%", height: "150px" },
+  // AI services
+  { img: sparqlimg,      title: "NL2SPARQL",          text: "Natural language → SPARQL",         url: "http://localhost:6005",  width:  "60%", height: "150px" },
+  { img: apiImg,         title: "Decider Service",    text: "ML Analytics Decision Engine",      url: "http://localhost:6009",  width:  "60%", height: "150px" },
+  { img: OllamaImg,      title: "Ollama (Mistral)",   text: "Local LLM service",                 url: "http://localhost:11434", width:  "60%", height: "150px" },
   ];
 
   return (

@@ -1,0 +1,26 @@
+version: "3.8"
+services:
+  mysql-dummy-publisher:
+    image: python:3.11-slim
+    container_name: mysql_dummy_publisher
+    profiles: ["dummy"]
+    depends_on:
+      - mysql
+    networks:
+      - ontobot-network
+    volumes:
+      - ./Abacws/api/src/api/data/mysql_dummy_publisher.py:/app/publisher.py:ro
+    environment:
+      DS_HOST: mysql
+      DS_PORT: "3306"
+      DS_USER: root
+      DS_PASSWORD: mysql
+      DS_DB: sensordb
+      DS_TABLE: sensor_data
+      TIMESTAMP_COLUMN: Datetime
+      INTERVAL_SECONDS: "10"
+    # Only runs when --profile dummy is enabled
+    command: ["sh", "-lc", "pip install --no-cache-dir PyMySQL && python /app/publisher.py --loop --interval ${INTERVAL_SECONDS}"]
+networks:
+  ontobot-network:
+    external: true

@@ -10,4 +10,5 @@ COPY model ./model
 
 EXPOSE 6009
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "6009"]
+# Switch to ML-only decider (no rule-based logic)
+CMD ["uvicorn", "app.main_ml_only:app", "--host", "0.0.0.0", "--port", "6009"]

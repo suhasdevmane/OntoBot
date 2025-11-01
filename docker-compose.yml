@@ -31,24 +31,26 @@ services:
     container_name: abacws-api
     hostname: apihost
     environment:
-      - API_PORT=5000
       # Choose ONE (time-series / mappings require Postgres OR MySQL):
-      # - DB_ENGINE=mongo
-      - DB_ENGINE=postgres
-      # - DB_ENGINE=mysql
-      # - DB_ENGINE=disabled
-      - PGHOST=postgres
-      - PGPORT=5432
-      - PGUSER=postgres
-      - PGPASSWORD=postgres
-      - PGDATABASE=abacws
+      API_PORT: "5000"
+      DB_ENGINE: mysql
+      # Postgres connection (if using postgres engine)
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: abacws
       # MySQL connection (used when DB_ENGINE=mysql)
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=root
-      - MYSQL_PASSWORD=mysql
-      - MYSQL_DATABASE=abacws
-      - API_KEY=V3rySecur3Pas3word
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: mysql
+      MYSQL_DATABASE: abacws
+      # External telemetry (pivot) source
+      SENSORDB_DATABASE: sensordb
+      SENSORDB_TABLE: sensor_data
+      TIMESTAMP_COLUMN: Datetime
+      API_KEY: V3rySecur3Pas3word
     restart: always
     depends_on:
       - mongo
@@ -57,7 +59,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./api/src/api/data:/api/src/api/data
+      - ./Abacws/api/src/api/data:/api/src/api/data
     healthcheck:
       test: ["CMD", "sh", "-lc", "wget -qO- http://localhost:5000/health | grep -q 'ok'"]
       interval: 30s
@@ -280,25 +282,24 @@ services:
 
 
 # #  ============================= database miagration ==============================
-#   mysql:
-#     image: mysql:8
-#     container_name: mysqlserver
-#     restart: always
-#     hostname: mysqlserver
-#     networks:
-#       - ontobot-network
-#     environment:
-#       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-mysql}
-#       - MYSQL_DATABASE=${DB_NAME:-sensordb}
-#       # Optional: create non-root user
-#       - MYSQL_USER=${MYSQL_APP_USER:-thingsboard}
-#       - MYSQL_PASSWORD=${MYSQL_APP_PASSWORD:-thingsboard}
-#     # Expose only if you need to connect from host; omit to avoid local port conflicts.
-#     ports:
-#       - "3307:3306"   # example alternative host port if 3306 already in use
-#       # - "33060:33060"
-#     volumes:
-#       - mysql-data:/var/lib/mysql
+  mysql:
+    image: mysql:8
+    container_name: mysql
+    restart: always
+    hostname: mysql
+    networks:
+      - ontobot-network
+    environment:
+      - MYSQL_ROOT_PASSWORD=mysql
+      - MYSQL_DATABASE=sensordb
+      # Optional: create non-root user (unused by API which uses root above)
+      - MYSQL_USER=thingsboard
+      - MYSQL_PASSWORD=thingsboard
+    # Expose only if you need to connect from host; omit to avoid local port conflicts.
+    # ports:
+    #   - "3307:3306"   # example alternative host port if 3306 already in use
+    volumes:
+      - mysql-data:/var/lib/mysql
 
 
 
@@ -692,6 +693,7 @@ volumes:
   # ollama-models:
   mongo-data:
   api-data:
+  mysql-data:
   # mytb-data:
   #   external: true
   # mytb-logs:

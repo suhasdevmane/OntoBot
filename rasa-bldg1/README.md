@@ -1,6 +1,6 @@
 # Building 1 - ABACWS (Real University Testbed)
 
-**Rasa Conversational AI Stack for Building 1**
+**Rasa Conversational AI Stack for Building 1 with Typo-Tolerant Sensor Resolution**
 
 [![Rasa](https://img.shields.io/badge/Rasa-3.6.12-5A17EE?logo=rasa)](https://rasa.com/)
 [![Python](https://img.shields.io/badge/Python-3.10-3776AB?logo=python&logoColor=white)](https://www.python.org/)
@@ -19,6 +19,7 @@ This directory contains the Rasa Open Source conversational AI stack specificall
 | **Database** | MySQL (port 3307) |
 | **Knowledge Graph** | Brick Schema 1.3 via Jena Fuseki (port 3030) |
 | **Compose File** | `docker-compose.bldg1.yml` (from repo root) |
+| **Typo Tolerance** | ✅ Automatic sensor name correction with fuzzy matching |
 
 ### Sensor Types (20 sensors per zone)
 
@@ -134,7 +135,19 @@ environment:
   # Feature Flags
   ENABLE_SUMMARIZATION: "true"
   ENABLE_ANALYTICS: "true"
+  
+  # Typo-Tolerant Sensor Resolution (NEW)
+  FUZZY_THRESHOLD: 80              # Fuzzy matching threshold (0-100)
+  SENSOR_LIST_RELOAD_SEC: 300      # Auto-reload sensor_list.txt interval
 ```
+
+**Typo Tolerance Configuration:**
+- `FUZZY_THRESHOLD`: Controls how strict fuzzy matching is (default: 80)
+  - Lower (70): More lenient, tolerates more typos but may have false positives
+  - Higher (90): Stricter, fewer false positives but less typo tolerance
+- `SENSOR_LIST_RELOAD_SEC`: How often to reload sensor_list.txt (default: 300 seconds)
+
+See [TYPO_TOLERANT_SENSORS.md](TYPO_TOLERANT_SENSORS.md) for complete documentation.
 
 ### Volumes
 
@@ -163,6 +176,19 @@ What's the CO2 level in zone 5.01?
 Show me air quality trends for the last week
 Is the air quality good in zone 5.20?
 ```
+
+**Typo-Tolerant Queries (NEW):**
+```
+what is NO2 sensor? where this NO2 Level sensor 5.09 is located?
+show me NO2  Level   Sensor  5.09  (multiple spaces)
+NO2 Levl Sensor 5.09  (typo in "Level")
+Carbon Monoxide Coal Gas Liquefied MQ9 Gas Sensor 5.25
+```
+
+**Note:** The system automatically corrects sensor name typos, spacing, and formatting errors:
+- "NO2 Level sensor 5.09" → `NO2_Level_Sensor_5.09` (spaces fixed)
+- "NO2 Levl Sensor 5.09" → `NO2_Level_Sensor_5.09` (typo corrected, score: 97.5)
+- "NO2_Level_sensor_5.09" → `NO2_Level_Sensor_5.09` (case normalized)
 
 **Analytics Queries:**
 ```
@@ -193,10 +219,11 @@ The bot returns structured responses with:
 ```
 rasa-bldg1/
 ├── actions/
-│   ├── actions.py           # Custom action logic
-│   ├── sensor_list.txt      # 680 ABACWS sensor names
+│   ├── actions.py           # Custom action logic with typo-tolerant resolution
+│   ├── sensor_list.txt      # 680 ABACWS sensor names (canonical forms)
 │   ├── sensor_uuids.txt     # UUID mappings
-│   └── requirements.txt     # Action dependencies
+│   ├── requirements.txt     # Action dependencies (includes rapidfuzz)
+│   └── test_sensor_extraction.py  # Test script for typo tolerance
 ├── data/
 │   ├── nlu.yml              # NLU training examples
 │   ├── rules.yml            # Conversation rules
@@ -246,6 +273,60 @@ Actions are live-mounted, so changes take effect immediately after container res
 # Then restart action server
 docker-compose -f docker-compose.bldg1.yml restart action_server_bldg1
 ```
+
+## 🧠 Typo-Tolerant Sensor Resolution
+
+Building 1 includes **automatic sensor name correction** that handles typos, spacing errors, and formatting inconsistencies in user queries.
+
+### Features
+
+- ✅ **Space Normalization**: "NO2 Level Sensor 5.09" → `NO2_Level_Sensor_5.09`
+- ✅ **Fuzzy Matching**: "NO2 Levl Sensor 5.09" → `NO2_Level_Sensor_5.09` (typo corrected, score: 97.5)
+- ✅ **Case Correction**: "NO2_Level_sensor_5.09" → `NO2_Level_Sensor_5.09`
+- ✅ **Number Formatting**: "NO2 Level Sensor 5.9" → `NO2_Level_Sensor_5.09`
+- ✅ **SPARQL Postprocessing**: Fixes malformed queries automatically
+- ✅ **Auto-Reload**: Updates when `sensor_list.txt` changes (300s interval)
+
+### How It Works
+
+1. **Text Extraction**: Detects sensor mentions in natural language
+2. **Normalization**: Converts spaces to underscores
+3. **Fuzzy Matching**: Matches against 680 canonical sensor names (threshold: 80)
+4. **Question Rewrite**: Replaces mentions with canonical forms
+5. **SPARQL Generation**: Creates valid queries with correct sensor names
+
+### Configuration
+
+```yaml
+# docker-compose.bldg1.yml
+action_server_bldg1:
+  environment:
+    - FUZZY_THRESHOLD=80        # Matching tolerance (0-100)
+    - SENSOR_LIST_RELOAD_SEC=300  # Reload interval
+```
+
+### Testing
+
+```powershell
+# Run standalone test
+cd rasa-bldg1/actions
+python test_sensor_extraction.py
+
+# Expected output:
+# [Test 1]
+# Input: what is NO2 sensor? where this NO2 Level sensor 5.09 is located?
+# Extracted: 1 sensor(s)
+#   'NO2 Level sensor 5.09' -> 'NO2_Level_Sensor_5.09'
+# Rewritten: ...NO2_Level_Sensor_5.09...
+```
+
+### Documentation
+
+- **Complete Guide**: [TYPO_TOLERANT_SENSORS.md](TYPO_TOLERANT_SENSORS.md)
+- **Implementation Summary**: [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)
+- **Quick Start**: [QUICK_START_TYPO_TOLERANCE.md](QUICK_START_TYPO_TOLERANCE.md)
+
+---
 
 ## 🏗️ Building-Specific Customization
 
@@ -520,8 +601,10 @@ foreach ($test in $tests) {
 - **Brick Schema**: https://brickschema.org/
 - **Apache Jena Fuseki**: https://jena.apache.org/documentation/fuseki2/
 - **SPARQL 1.1**: https://www.w3.org/TR/sparql11-query/
+- **RapidFuzz**: https://github.com/maxbachmann/RapidFuzz (fuzzy string matching)
 - **OntoBot Main README**: [../README.md](../README.md)
 - **Multi-Building Support**: [../MULTI_BUILDING_SUPPORT.md](../MULTI_BUILDING_SUPPORT.md)
+- **Typo-Tolerant Sensors**: [TYPO_TOLERANT_SENSORS.md](TYPO_TOLERANT_SENSORS.md)
 - **Analytics API**: [../analytics.md](../analytics.md)
 
 ## 🆘 Support

@@ -11,7 +11,7 @@ from rasa_sdk import Action, Tracker, FormValidationAction
 from rasa_sdk.executor import CollectingDispatcher
 from rasa_sdk.events import SlotSet
 from rasa_sdk.types import DomainDict
-from typing import Any, Text, Dict, List, Tuple, Union, Optional
+from typing import Any, Text, Dict, List, Tuple, Union, Optional, Set
 from rasa_sdk.events import FollowupAction
 from SPARQLWrapper import SPARQLWrapper, JSON
 import mysql.connector
@@ -227,8 +227,8 @@ BASE_URL_DEFAULT = "http://localhost:8080"
 # Optional unified decider microservice
 DECIDER_URL = os.getenv("DECIDER_URL")
 # Summarization/Ollama base URL
-SUMMARIZATION_URL = os.getenv("SUMMARIZATION_URL", "http://ollama:11434") # Original internal URL
-# SUMMARIZATION_URL = os.getenv("SUMMARIZATION_URL", "https://dashing-sunfish-curiously.ngrok-free.app") # Updated to external ngrok URL for testing
+# SUMMARIZATION_URL = os.getenv("SUMMARIZATION_URL", "http://ollama:11434") # Original internal URL
+SUMMARIZATION_URL = os.getenv("SUMMARIZATION_URL", "https://dashing-sunfish-curiously.ngrok-free.app") # Updated to external ngrok URL for testing
 
 def get_mysql_config() -> Dict[str, Any]:
     """Return a unified MySQL configuration using environment variables with sensible defaults.
@@ -272,24 +272,70 @@ def get_mysql_config() -> Dict[str, Any]:
         pass
     return cfg
 
-# Load VALID_SENSOR_TYPES from sensor_list.txt
+# Load VALID_SENSOR_TYPES from sensor_list.txt (with on-disk reload)
+
+# Fuzzy match threshold (0-100). Override via env SENSOR_FUZZY_THRESHOLD to tune without code changes.
+FUZZY_THRESHOLD: int = 80
 try:
-    # In the built image, files reside under /app; with WORKDIR=/app, use relative paths.
-    # Prefer sensor_list.txt in current dir; fallback to legacy ./actions path if needed.
-    candidates = [
-        os.path.join(os.getcwd(), "sensor_list.txt"),
-        os.path.join(os.getcwd(), "actions", "sensor_list.txt"),
-    ]
-    path = next((p for p in candidates if os.path.exists(p)), None)
-    with open(path or "sensor_list.txt", "r") as f:
-        VALID_SENSOR_TYPES = {line.strip() for line in f if line.strip()}
-    logger.info(f"Loaded {len(VALID_SENSOR_TYPES)} sensor types from sensor_list.txt")
-except FileNotFoundError:
-    logger.error("sensor_list.txt not found in data/ directory")
-    VALID_SENSOR_TYPES = set()
-except Exception as e:
-    logger.error(f"Error loading sensor_list.txt: {e}")
-    VALID_SENSOR_TYPES = set()
+    _thr = int(os.getenv("SENSOR_FUZZY_THRESHOLD", str(FUZZY_THRESHOLD)))
+    if 0 <= _thr <= 100:
+        FUZZY_THRESHOLD = _thr
+except Exception:
+    # keep default if env invalid
+    pass
+_SENSOR_LIST_CACHE: Set[str] = set()
+_SENSOR_LIST_CACHE_MTIME: Optional[float] = None
+_SENSOR_LIST_CACHE_PATH: Optional[str] = None
+_SENSOR_LIST_ENV = os.getenv("SENSOR_LIST_FILE")  # optional override
+_SENSOR_LIST_RELOAD_SEC = int(os.getenv("SENSOR_LIST_RELOAD_SEC", "300"))
+
+def _load_sensor_list(force: bool = False) -> Set[str]:
+    global _SENSOR_LIST_CACHE, _SENSOR_LIST_CACHE_MTIME, _SENSOR_LIST_CACHE_PATH
+    candidates = []
+    if _SENSOR_LIST_ENV:
+        candidates.append(_SENSOR_LIST_ENV)
+    cwd = os.getcwd()
+    candidates.extend([
+        os.path.join(cwd, "sensor_list.txt"),
+        os.path.join(cwd, "actions", "sensor_list.txt"),
+    ])
+    chosen = next((p for p in candidates if p and os.path.exists(p)), None)
+    if not chosen:
+        if _SENSOR_LIST_CACHE:
+            logger.warning("sensor_list.txt not found; using cached %d entries", len(_SENSOR_LIST_CACHE))
+            return _SENSOR_LIST_CACHE
+        logger.error("sensor_list.txt not found in any candidate path: %s", candidates)
+        return set()
+    try:
+        mtime = os.path.getmtime(chosen)
+    except OSError:
+        logger.warning("Unable to stat sensor_list file: %s", chosen)
+        return _SENSOR_LIST_CACHE if _SENSOR_LIST_CACHE else set()
+    need_reload = force or _SENSOR_LIST_CACHE_MTIME is None or _SENSOR_LIST_CACHE_PATH != chosen
+    if not need_reload:
+        age = time.time() - _SENSOR_LIST_CACHE_MTIME
+        if age > _SENSOR_LIST_RELOAD_SEC or mtime != _SENSOR_LIST_CACHE_MTIME:
+            need_reload = True
+    if not need_reload:
+        return _SENSOR_LIST_CACHE
+    try:
+        with open(chosen, "r", encoding="utf-8") as f:
+            new_set = {line.strip() for line in f if line.strip()}
+        _SENSOR_LIST_CACHE = new_set
+        _SENSOR_LIST_CACHE_MTIME = mtime
+        _SENSOR_LIST_CACHE_PATH = chosen
+        logger.info("Loaded %d sensor types from %s", len(new_set), chosen)
+        return new_set
+    except Exception as e:
+        logger.error("Error loading sensor_list.txt from %s: %s", chosen, e)
+        return _SENSOR_LIST_CACHE if _SENSOR_LIST_CACHE else set()
+
+def get_valid_sensor_types() -> Set[str]:
+    """Return the current set of valid sensor names with lightweight reload semantics."""
+    return _load_sensor_list(force=False)
+
+# Pre-warm cache once on import so first request is fast
+VALID_SENSOR_TYPES: Set[str] = get_valid_sensor_types()
 # Initialize Ollama client
 try:
     client = Client(host=SUMMARIZATION_URL)
@@ -587,7 +633,8 @@ class ValidateSensorForm(FormValidationAction):
         # Build a candidate list of canonical sensor names from mappings and curated list
         uuid_re = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
         mapping_names = {k for k in sensor_mappings.keys() if not uuid_re.match(k)}
-        candidates: List[str] = sorted(set(VALID_SENSOR_TYPES) | set(mapping_names))
+        valid_set = get_valid_sensor_types()
+        candidates: List[str] = sorted(set(valid_set) | set(mapping_names))
 
         valid_sensors: List[str] = []
         for s in sensor_types:
@@ -597,7 +644,7 @@ class ValidateSensorForm(FormValidationAction):
             # Quick exact acceptance
             if (
                 s_stripped in sensor_mappings
-                or s_stripped in VALID_SENSOR_TYPES
+                or s_stripped in valid_set
                 or bool(sensor_regex.match(s_stripped))
             ):
                 valid_sensors.append(s_stripped)
@@ -613,14 +660,14 @@ class ValidateSensorForm(FormValidationAction):
             # Fuzzy match (~90+) against known candidates
             try:
                 match = rf_process.extractOne(s_stripped, candidates, scorer=rf_fuzz.WRatio)
-                if match and match[1] >= 90:
+                if match and match[1] >= FUZZY_THRESHOLD:
                     canon = match[0]
                     logger.info(f"Fuzzy-matched sensor '{s_stripped}' -> '{canon}' (score={match[1]})")
                     valid_sensors.append(canon)
                     continue
                 # Retry with alt spacing
                 match2 = rf_process.extractOne(alt, candidates, scorer=rf_fuzz.WRatio)
-                if match2 and match2[1] >= 90:
+                if match2 and match2[1] >= FUZZY_THRESHOLD:
                     canon2 = match2[0]
                     logger.info(f"Fuzzy-matched sensor (alt) '{s_stripped}' -> '{canon2}' (score={match2[1]})")
                     valid_sensors.append(canon2)
@@ -1277,57 +1324,167 @@ class ActionQuestionToBrickbot(Action):
         ]
         return "\n".join(prefixes) + "\n" + sparql_query
 
-    def canonicalize_sensor_names(self, sensor_types: List[str]) -> List[str]:
-        """Map provided sensor names to canonical ones using normalization + fuzzy matching (>=90)."""
-        if not sensor_types:
-            return sensor_types
-        # First, normalize common Brick naming case issues (e.g., user types Air_Quality_sensor_5.04 but ontology stores Air_Quality_Sensor_5.04)
-        normalized_initial: List[str] = []
-        for s in sensor_types:
-            if isinstance(s, str) and '_sensor_' in s and '_Sensor_' not in s:
-                fixed = s.replace('_sensor_', '_Sensor_')
-                if fixed != s:
-                    logger.info(f"Normalized sensor case '{s}' -> '{fixed}' (pre-fuzzy phase)")
-                normalized_initial.append(fixed)
-            else:
-                normalized_initial.append(s)
-        sensor_types = normalized_initial
-        # Build candidate list
+    def extract_sensors_from_text(self, text: str) -> List[Tuple[str, str, str]]:
+        """Extract sensor mentions from natural language text using multiple patterns.
+        
+        Returns: List of (original_mention, normalized_form, canonical_name) tuples
+        
+        Handles patterns like:
+        - "NO2 Level Sensor 5.09" -> NO2_Level_Sensor_5.09
+        - "NO2_Level_Sensor_5.09" -> NO2_Level_Sensor_5.09
+        - "Carbon Monoxide Coal Gas Liquefied MQ9 Gas Sensor 5.25"
+        """
+        if not isinstance(text, str) or not text.strip():
+            return []
+        
+        results: List[Tuple[str, str, str]] = []
+        valid_set = get_valid_sensor_types()
         mappings = self.load_sensor_mappings()
         uuid_re = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-        mapping_names = {k for k in mappings.keys() if not uuid_re.match(k)}
-        candidates: List[str] = sorted(set(VALID_SENSOR_TYPES) | set(mapping_names))
+        candidates = sorted(set(valid_set) | {k for k in mappings.keys() if not uuid_re.match(k)})
+        
+        # Pattern 1: Underscore-joined form (already canonical)
+        pattern1 = r'\b([A-Za-z0-9_]+_[Ss]ensor_\d+(?:\.\d+)?)\b'
+        for match in re.finditer(pattern1, text, re.IGNORECASE):
+            original = match.group(1)
+            normalized = original.replace('_sensor_', '_Sensor_')
+            canonical = self._fuzzy_match_single(normalized, candidates)
+            if canonical:
+                results.append((original, normalized, canonical))
+        
+        # Pattern 2: Space-separated form "Prefix words sensor number"
+        # Match multi-word prefixes followed by "sensor" and a number
+        pattern2 = r'\b([A-Z][A-Za-z0-9_\s]+?)\s+[Ss]ensor\s+(\d+(?:\.\d+)?)\b'
+        for match in re.finditer(pattern2, text):
+            original = match.group(0)
+            prefix = match.group(1).strip().replace(' ', '_')
+            number = match.group(2)
+            normalized = f"{prefix}_Sensor_{number}"
+            canonical = self._fuzzy_match_single(normalized, candidates)
+            if canonical:
+                results.append((original, normalized, canonical))
+        
+        # Deduplicate by canonical name while preserving order
+        seen = set()
+        unique_results = []
+        for orig, norm, canon in results:
+            if canon not in seen:
+                seen.add(canon)
+                unique_results.append((orig, norm, canon))
+        
+        return unique_results
+
+    def _fuzzy_match_single(self, sensor_name: str, candidates: List[str]) -> Optional[str]:
+        """Fuzzy match a single sensor name against candidates.
+        
+        Returns canonical name if match score >= FUZZY_THRESHOLD, else None.
+        """
+        if not sensor_name or not candidates:
+            return None
+        
+        s_stripped = sensor_name.strip()
+        
+        # Exact match first
+        if s_stripped in candidates:
+            return s_stripped
+        
+        # Try underscore/space swap
+        alt = s_stripped.replace(' ', '_') if ' ' in s_stripped else s_stripped.replace('_', ' ')
+        if alt in candidates:
+            logger.info(f"Normalized '{s_stripped}' -> '{alt}'")
+            return alt.replace(' ', '_')
+        
+        # Fuzzy match
+        try:
+            match = rf_process.extractOne(s_stripped, candidates, scorer=rf_fuzz.WRatio)
+            if match and match[1] >= FUZZY_THRESHOLD:
+                logger.info(f"Fuzzy-matched '{s_stripped}' -> '{match[0]}' (score={match[1]})")
+                return match[0]
+            
+            # Try with alt form
+            match2 = rf_process.extractOne(alt, candidates, scorer=rf_fuzz.WRatio)
+            if match2 and match2[1] >= FUZZY_THRESHOLD:
+                logger.info(f"Fuzzy-matched (alt) '{s_stripped}' -> '{match2[0]}' (score={match2[1]})")
+                return match2[0]
+        except Exception as e:
+            logger.warning(f"Fuzzy match error for '{s_stripped}': {e}")
+        
+        return None
+
+    def canonicalize_sensor_names(self, sensor_types: List[str]) -> List[str]:
+        """Map provided sensor names to canonical ones using normalization + fuzzy matching."""
+        if not sensor_types:
+            return sensor_types
+        
+        # Build candidate list
+        valid_set = get_valid_sensor_types()
+        mappings = self.load_sensor_mappings()
+        uuid_re = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+        candidates = sorted(set(valid_set) | {k for k in mappings.keys() if not uuid_re.match(k)})
+        
         out: List[str] = []
         for s in sensor_types:
             if not isinstance(s, str):
                 continue
-            s_stripped = s.strip()
-            # Exact or curated
-            if s_stripped in candidates:
-                out.append(s_stripped)
-                continue
-            alt = s_stripped.replace(" ", "_") if " " in s_stripped else s_stripped.replace("_", " ")
-            if alt in candidates:
-                out.append(alt.replace(" ", "_"))
-                logger.info(f"Canonicalized sensor by normalization in QuestionToBrickbot: '{s_stripped}' -> '{alt}'")
-                continue
-            # Fuzzy fallback
-            try:
-                match = rf_process.extractOne(s_stripped, candidates, scorer=rf_fuzz.WRatio)
-                if match and match[1] >= 90:
-                    out.append(match[0])
-                    logger.info(f"Fuzzy-matched (QuestionToBrickbot) '{s_stripped}' -> '{match[0]}' (score={match[1]})")
-                    continue
-                match2 = rf_process.extractOne(alt, candidates, scorer=rf_fuzz.WRatio)
-                if match2 and match2[1] >= 90:
-                    out.append(match2[0])
-                    logger.info(f"Fuzzy-matched alt (QuestionToBrickbot) '{s_stripped}' -> '{match2[0]}' (score={match2[1]})")
-                    continue
-            except Exception as fe:
-                logger.warning(f"Fuzzy match error in QuestionToBrickbot for '{s_stripped}': {fe}")
-        # Dedup preserve order
+            canonical = self._fuzzy_match_single(s, candidates)
+            if canonical:
+                out.append(canonical)
+        
+        # Dedup while preserving order
         seen = set()
         return [x for x in out if not (x in seen or seen.add(x))]
+    
+    def postprocess_sparql_query(self, sparql: str) -> str:
+        """Fix common SPARQL generation issues from NL2SPARQL.
+        
+        Issues addressed:
+        1. Spaces in sensor names: "Sensor 5.09" -> "Sensor_5.09"
+        2. Wrong prefix for instances: "brick:Type_Sensor_#.##" -> "bldg:Type_Sensor_#.##"
+        3. Multiple spaces collapsed to single underscore
+        
+        Returns: Corrected SPARQL query string
+        """
+        if not isinstance(sparql, str):
+            return sparql
+        
+        # Fix 1: Replace spaces before numbers in sensor names
+        # Pattern: "Sensor <space> <number>" -> "Sensor_<number>"
+        fixed = re.sub(r'(\w+_Sensor)\s+(\d+\.?\d*)', r'\1_\2', sparql)
+        
+        # Fix 2: Swap brick: prefix to bldg: for sensor instances (end with _Sensor_#.##)
+        # Match: brick:SomeThing_Sensor_#.## -> bldg:SomeThing_Sensor_#.##
+        fixed = re.sub(r'brick:([A-Za-z0-9_]+_Sensor_\d+(?:\.\d+)?)', r'bldg:\1', fixed)
+        
+        # Fix 3: Collapse multiple spaces in any remaining sensor-like patterns
+        fixed = re.sub(r'([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+_Sensor)', r'\1_\2', fixed)
+        
+        if fixed != sparql:
+            logger.info(f"SPARQL postprocessing applied corrections")
+            logger.debug(f"SPARQL before:\n{sparql}")
+            logger.debug(f"SPARQL after:\n{fixed}")
+        
+        return fixed
+
+    def rewrite_question_with_sensors(self, question: str, sensor_mappings: List[Tuple[str, str, str]]) -> str:
+        """Rewrite question replacing sensor mentions with canonical forms.
+        
+        Args:
+            question: Original user question
+            sensor_mappings: List of (original, normalized, canonical) tuples
+            
+        Returns:
+            Rewritten question with canonical sensor names
+        """
+        rewritten = question
+        # Sort by length (longest first) to avoid partial replacements
+        sorted_mappings = sorted(sensor_mappings, key=lambda x: len(x[0]), reverse=True)
+        
+        for original, _, canonical in sorted_mappings:
+            # Case-insensitive replacement
+            pattern = re.compile(re.escape(original), re.IGNORECASE)
+            rewritten = pattern.sub(canonical, rewritten)
+        
+        return rewritten
 
     def execute_sparql_query(self, sparql_query: str) -> Dict:
         """
@@ -1520,7 +1677,7 @@ class ActionQuestionToBrickbot(Action):
         no_ts = standardized_json.get("_no_timeseries", False)
         prompt_parts = [
             "Instructions: You are an expert smart building assistant. Read the provided ontology-derived data "
-            "(BrickSchema entities) and any analytics/SQL context, then provide a concise end-user summary.",
+            "(BrickSchema entities) and any analytics/SQL context, then provide a concise end-user summary. Add user based and additional information for user questions.",
             f"Question: {question}",
         ]
         if no_ts:
@@ -1603,6 +1760,23 @@ class ActionQuestionToBrickbot(Action):
 
             sensor_types = tracker.get_slot("sensor_type") or []
             plog.info("Message received", question=user_question, sensor_types=sensor_types)
+            
+            # NEW: Extract sensors from natural language text if slot is empty
+            extracted_sensors = []
+            rewritten_question = user_question
+            if not sensor_types:
+                try:
+                    sensor_mappings = self.extract_sensors_from_text(user_question)
+                    if sensor_mappings:
+                        extracted_sensors = [canonical for _, _, canonical in sensor_mappings]
+                        rewritten_question = self.rewrite_question_with_sensors(user_question, sensor_mappings)
+                        plog.info("Extracted sensors from text", 
+                                 original_question=user_question,
+                                 extracted_sensors=extracted_sensors,
+                                 rewritten_question=rewritten_question)
+                        sensor_types = extracted_sensors
+                except Exception as e:
+                    plog.warning("Failed to extract sensors from text", error=str(e))
 
             # Canonicalize any provided sensor names before proceeding
             if sensor_types:
@@ -1640,11 +1814,13 @@ class ActionQuestionToBrickbot(Action):
             # Always include an 'entity' parameter for NL2SPARQL.
             entity_string = ", ".join([f"bldg:{sensor}" for sensor in sensor_types]) if sensor_types else ""
             entity_value = (entity_string).strip() or " "
-            input_data = {"question": user_question, "entity": entity_value}
+            # Use rewritten question (with canonical sensor names) for NL2SPARQL
+            input_data = {"question": rewritten_question, "entity": entity_value}
             plog.info(
                 "Prepared NL2SPARQL payload",
                 nl2sparql_url=nl2sparql_url,
                 entity_sent=entity_value,
+                question_used=rewritten_question,
                 used_fallback=(entity_value == " ")
             )
             logger.info(f"Prepared NL2SPARQL payload (pre-sensor prompt decision): {input_data}")
@@ -1661,6 +1837,14 @@ class ActionQuestionToBrickbot(Action):
                 or response.get("SPARQL")
                 or response.get("query")
             )
+            
+            # NEW: Postprocess SPARQL to fix space/prefix issues
+            if sparql_query:
+                try:
+                    sparql_query = self.postprocess_sparql_query(sparql_query)
+                except Exception as e:
+                    plog.warning("SPARQL postprocessing failed", error=str(e))
+            
             translation_error = "error" in response or not bool(sparql_query)
             plog.info("Translation status", translation_error=translation_error)
 
@@ -1794,7 +1978,7 @@ class ActionQuestionToBrickbot(Action):
                 return [{"event": "active_loop", "name": "sensor_form"}, SlotSet("sparql_error", False)]
             base_url = os.getenv("BASE_URL", BASE_URL_DEFAULT)
             user_safe, user_dir = get_user_artifacts_dir(tracker)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = int(time.time())
             filename = f"sparql_response_{timestamp}.json"
             output_file = os.path.join(user_dir, filename)
             try:
@@ -1855,6 +2039,24 @@ class ActionQuestionToBrickbot(Action):
             events = [SlotSet("sparql_error", False)]
             if _pre_slot_events:
                 events.extend(_pre_slot_events)
+
+            # Helper: prefer values about to be set via _pre_slot_events over current tracker slots
+            def _pending_slot(slot_name: str) -> Optional[Any]:
+                try:
+                    # walk from the end to respect the latest override
+                    for ev in reversed(_pre_slot_events or []):
+                        # SlotSet objects expose 'key' and 'value'
+                        try:
+                            if getattr(ev, "key", None) == slot_name:
+                                return getattr(ev, "value", None)
+                        except Exception:
+                            pass
+                        # Or serialized dict shape
+                        if isinstance(ev, dict) and ev.get("event") == "slot" and ev.get("name") == slot_name:
+                            return ev.get("value")
+                except Exception:
+                    pass
+                return tracker.get_slot(slot_name)
             # Query the unified decider to decide if analytics should be performed and which one
             perform_analytics = None
             decided_analytics = None
@@ -1917,20 +2119,25 @@ class ActionQuestionToBrickbot(Action):
                 events.append(SlotSet("analytics_type", selected_analytics))
                 emit_message(dispatcher, tracker, text=f"Proceeding with analytics: {selected_analytics} on IDs: {timeseries_ids}", detail=True)
             
-                # Refresh date slots after potential override
-                start_date = tracker.get_slot("start_date")
-                end_date = tracker.get_slot("end_date")
+                # Refresh date slots after potential override (consider pending SlotSet events)
+                start_date = _pending_slot("start_date")
+                end_date = _pending_slot("end_date")
                 date_range_mode = tracker.get_slot("date_range_mode")
 
                 # Check if dates are valid and recent (not just leftover from previous conversation)
                 # If dates exist but are stale or invalid, clear them
                 if start_date or end_date:
                     try:
-                        # Validate dates are parseable
+                        # Validate dates are parseable using flexible dateparser
+                        # Supports multiple formats: DD/MM/YYYY, YYYY-MM-DD, ISO format, etc.
                         if start_date:
-                            parse(start_date) if 'T' in start_date else datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S")
+                            parsed_start = dateparser.parse(start_date) if not isinstance(start_date, datetime) else start_date
+                            if not parsed_start:
+                                raise ValueError(f"Could not parse start_date: {start_date}")
                         if end_date:
-                            parse(end_date) if 'T' in end_date else datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S")
+                            parsed_end = dateparser.parse(end_date) if not isinstance(end_date, datetime) else end_date
+                            if not parsed_end:
+                                raise ValueError(f"Could not parse end_date: {end_date}")
                         plog.info("Found valid existing dates in slots", start_date=start_date, end_date=end_date)
                     except (ValueError, TypeError) as e:
                         plog.warning("Invalid dates in slots; will clear and ask user", error=str(e))

@@ -13,22 +13,22 @@
 
 services:
   # pgAdmin (used mainly with bldg2 Timescale or TB Postgres options; safe to keep here)
-  # pgadmin:
-  #   image: dpage/pgadmin4:snapshot
-  #   container_name: pgadmin
-  #   hostname: pgadminhost
-  #   ports:
-  #     - "5050:80"
-  #   environment:
-  #     PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-pgadmin@example.com}
-  #     PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
-  #     PGADMIN_LISTEN_ADDRESS: 0.0.0.0
-  #     PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
-  #   volumes:
-  #     # Default to bldg1 pgAdmin servers configuration; adjust if you use a different DB stack
-  #     - ./bldg1/servers.json:/pgadmin4/servers.json
-  #   networks:
-  #     - ontobot-network
+  pgadmin:
+    image: dpage/pgadmin4:snapshot
+    container_name: pgadmin
+    hostname: pgadminhost
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-pgadmin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_LISTEN_ADDRESS: 0.0.0.0
+      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
+    volumes:
+      # Default to bldg1 pgAdmin servers configuration; adjust if you use a different DB stack
+      - ./bldg1/servers.json:/pgadmin4/servers.json
+    networks:
+      - ontobot-network
   mongo:
     image: mongo      #or
     container_name: abacws-chatbot-mongo
@@ -49,8 +49,8 @@ services:
       - API_PORT=5000
       # Choose ONE (time-series / mappings require Postgres OR MySQL):
       # - DB_ENGINE=mongo
-      - DB_ENGINE=postgres
-      # - DB_ENGINE=mysql
+      # - DB_ENGINE=postgres
+      - DB_ENGINE=mysql
       # - DB_ENGINE=disabled
       - PGHOST=${API_PGHOST:-postgres}
       - PGPORT=${API_PGPORT:-5432}
@@ -174,7 +174,7 @@ services:
     image: devmanenvision/busybox:latest
     container_name: jena-fuseki-db
     volumes:
-      - jena-data:/fuseki
+      - jena-data1:/fuseki
     command: tail -f /dev/null
     networks:
       - ontobot-network
@@ -189,9 +189,9 @@ services:
       - fuseki-db
     volumes:
       # Named volumes for config, datasets, backups (persist across rebuilds)
-      - jena-bldg1-config:/fuseki/config
-      - jena-bldg1-datasets:/fuseki/databases
-      - jena-bldg1-backups:/fuseki/backups
+      - jena-data1-config:/fuseki/config
+      - jena-data1-datasets:/fuseki/databases
+      - jena-data1-backups:/fuseki/backups
     restart: always
     depends_on:
       - fuseki-db
@@ -463,7 +463,7 @@ services:
       pull_policy: always
       restart: unless-stopped
       ports:
-        - "${OLLAMA_PORT:-11434}:11434"
+        - "${OLLAMA_PORT:-11435}:11434"
       environment:
         - OLLAMA_NUM_PARALLEL=4
         - OLLAMA_MAX_LOADED_MODELS=1
@@ -490,29 +490,27 @@ services:
       networks:
         - ontobot-network
 
-
-  
 networks:
   ontobot-network:
 
 volumes:
-  jena-data:
+  jena-data1:
   mongo-data:
   attachments_volume:
   mysql-data:
-  # ollama-models:
+  ollama-models:
   mytb-data:
   mytb-logs:
   microservices-bldg1-plugins:
   microservices-bldg1-meta:
   microservices-bldg1-cache:
-  jena-bldg1-config:
-  jena-bldg1-datasets:
-  jena-bldg1-backups:
+  jena-data1-config:
+  jena-data1-datasets:
+  jena-data1-backups:
   postgres-data:
 
 
 
 
 
-  ## to turn up all containers use docker compose --env-file .env -f "C:\Users\suhas\Documents\GitHub\OntoBot\docker-compose.bldg1.yml" up -d --build
+  ## to turn up all containers use docker compose --env-file .env -f "C:\Users\suhas\Documents\GitHub\OntoBot\docker-compose.bldg1.yml" up --build

@@ -27,6 +27,16 @@ rules:
       - intent: bot_challenge
       - action: utter_iamabot
 
+  - rule: Cheer up unhappy users
+    steps:
+      - intent: mood_unhappy
+      - action: utter_cheer_up
+
+  - rule: Acknowledge happy users
+    steps:
+      - intent: mood_great
+      - action: utter_happy
+
   # Removed automatic activation of sensor_form on Questions_to_brickbot.
   # Now the intent will be handled by a story that calls action_question_to_brickbot first.
 
@@ -119,102 +129,4 @@ rules:
           - end_date: null
     steps:
       - action: utter_ask_end_date
-  - rule: Describe Formaldehyde_Level_Sensor_5.23
-    steps:
-      - intent: describe_sensor_formaldehyde_5_23
-      - action: utter_describe_sensor_formaldehyde_5_23
 
-  - rule: List CO2 sensors in east zone
-    steps:
-      - intent: list_co2_sensors_east_zone
-      - action: utter_list_co2_sensors_east_zone
-
-  - rule: Check air quality recommendations
-    steps:
-      - intent: check_air_quality_recommendations
-      - action: utter_check_air_quality_recommendations
-
-  - rule: Analyze recalibration for CO2_Level_Sensor_5.01
-    steps:
-      - intent: analyze_recalibration_co2_5_01
-      - action: utter_analyze_recalibration_co2_5_01
-
-  - rule: Analyze failure trends for Zone_Air_Humidity_Sensor_5.02
-    steps:
-      - intent: analyze_failure_trends_humidity_5_02
-      - action: utter_analyze_failure_trends_humidity_5_02
-
-  - rule: Analyze deviation for Air_Temperature_Sensor_5.08
-    steps:
-      - intent: analyze_deviation_temperature_5_08
-      - action: utter_analyze_deviation_temperature_5_08
-
-  - rule: Check status of Illuminance_Sensor_5.02
-    steps:
-      - intent: check_status_illuminance_5_02
-      - action: utter_check_status_illuminance_5_02
-
-  - rule: Analyze air quality trends for Air_Quality_Sensor_5.01
-    steps:
-      - intent: analyze_air_quality_trends_5_01
-      - action: utter_analyze_air_quality_trends_5_01
-
-  - rule: Check humidity for Air Humidity Sensor 5.05
-    steps:
-      - intent: check_humidity_5_05
-      - action: utter_check_humidity_5_05
-
-  - rule: Locate LPG_Natural_Gas_Town_MQ5_Gas_Sensor_5.32
-    steps:
-      - intent: locate_lpg_sensor_5_32
-      - action: utter_locate_lpg_sensor_5_32
-
-  - rule: Analyze CO trends for CO_Level_Sensor_5.02
-    steps:
-      - intent: analyze_co_trends_5_02
-      - action: utter_analyze_co_trends_5_02
-
-  - rule: Aggregate Formaldehyde_Level_Sensor_5.01 data
-    steps:
-      - intent: aggregate_formaldehyde_5_01
-      - action: utter_aggregate_formaldehyde_5_01
-
-  - rule: Correlate Air_Temperature_Sensor_5.01 and 5.02
-    steps:
-      - intent: correlate_temperature_5_01_5_02
-      - action: utter_correlate_temperature_5_01_5_02
-
-  - rule: Compute air quality index for February 2025
-    steps:
-      - intent: compute_air_quality_index_feb_2025
-      - action: utter_compute_air_quality_index_feb_2025
-
-  - rule: Detect anomalies in Sound_Noise_Sensor_MEMS_5.02
-    steps:
-      - intent: detect_anomalies_noise_5_02
-      - action: utter_detect_anomalies_noise_5_02
-
-  - rule: Analyze noise levels for Sound_Noise_Sensor_MEMS_5.01
-    steps:
-      - intent: analyze_noise_levels_5_01
-      - action: utter_analyze_noise_levels_5_01
-
-  - rule: Analyze air quality for Air_Quality_Sensor_5.02
-    steps:
-      - intent: analyze_air_quality_5_02
-      - action: utter_analyze_air_quality_5_02
-
-  - rule: Analyze formaldehyde for Formaldehyde_Level_Sensor_5.02
-    steps:
-      - intent: analyze_formaldehyde_5_02
-      - action: utter_analyze_formaldehyde_5_02
-
-  - rule: Analyze temperature and humidity for 5.01 and 5.02
-    steps:
-      - intent: analyze_temperature_humidity_5_01_5_02
-      - action: utter_analyze_temperature_humidity_5_01_5_02
-
-  - rule: Detect failures in Oxygen_O2_Percentage_Gas_Sensor_5.02
-    steps:
-      - intent: detect_failures_oxygen_5_02
-      - action: utter_detect_failures_oxygen_5_02

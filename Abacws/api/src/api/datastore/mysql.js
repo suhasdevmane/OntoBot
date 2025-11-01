@@ -9,6 +9,8 @@
 const { MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE } = require('../constants');
 const { upsertDevice } = require('../devicesFile');
 const mysql = require('mysql2/promise');
+const fs = require('fs');
+const path = require('path');
 
 let pool; let closed=false; let initStarted=false; let readyResolve, readyReject;
 const ready = new Promise((res, rej)=>{ readyResolve=res; readyReject=rej; });
@@ -89,11 +91,11 @@ async function init(){
     name VARCHAR(191) UNIQUE NOT NULL,
     host VARCHAR(191) NOT NULL,
     port INT NOT NULL,
-    database VARCHAR(191) NOT NULL,
+    \`database\` VARCHAR(191) NOT NULL,
     schema_name VARCHAR(191),
     username VARCHAR(191),
     password VARCHAR(191),
-    ssl TINYINT(1) DEFAULT 0,
+    \`ssl\` TINYINT(1) DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
   await pool.query(`CREATE TABLE IF NOT EXISTS device_timeseries_mappings (
@@ -153,6 +155,135 @@ async function init(){
   } catch(e){ console.warn('[MySQL] Device seeding skipped:', e.message); }
 }
 
+// -------------------------
+// Sensor UUID index (from file)
+// -------------------------
+const SENSOR_FILE_PATH = path.resolve(__dirname, '../data/sensor_uuids.txt');
+let sensorIndexByDevice = new Map(); // deviceName -> Array<{name, uuid}>
+let sensorIndexByUUID = new Map();   // uuid -> name
+let sensorIndexLoadedAt = 0;
+
+function parseDeviceNameFromSensor(sensorName){
+  // Expect suffix like _5.20 -> deviceName 'node_5.20'
+  const m = String(sensorName).match(/_(\d+\.\d+)\s*$/);
+  if(!m) return null;
+  return `node_${m[1]}`;
+}
+
+function loadSensorIndex(force=false){
+  try {
+    const stat = fs.statSync(SENSOR_FILE_PATH);
+    if(!force && sensorIndexLoadedAt && stat.mtimeMs <= sensorIndexLoadedAt) return; // up-to-date
+    const content = fs.readFileSync(SENSOR_FILE_PATH, 'utf8');
+    const byDevice = new Map();
+    const byUUID = new Map();
+    for(const line of content.split(/\r?\n/)){
+      const trimmed = line.trim();
+      if(!trimmed || trimmed.startsWith('#')) continue;
+      const [name, uuid] = trimmed.split(',');
+      if(!name || !uuid) continue;
+      const device = parseDeviceNameFromSensor(name);
+      if(!device) continue;
+      if(!byDevice.has(device)) byDevice.set(device, []);
+      byDevice.get(device).push({ name: name.trim(), uuid: uuid.trim() });
+      byUUID.set(uuid.trim(), name.trim());
+    }
+    sensorIndexByDevice = byDevice;
+    sensorIndexByUUID = byUUID;
+    sensorIndexLoadedAt = stat.mtimeMs;
+  } catch(e){
+    // If file not found, leave maps empty
+    sensorIndexByDevice = new Map(); sensorIndexByUUID = new Map(); sensorIndexLoadedAt = Date.now();
+    console.warn('[MySQL] sensor_uuids.txt not loaded:', e.message);
+  }
+}
+
+function listSensorsForDevice(deviceName){
+  loadSensorIndex();
+  return sensorIndexByDevice.get(deviceName) || [];
+}
+
+async function filterExistingColumns(schema, table, colNames){
+  if(!colNames.length) return [];
+  // Try information_schema first
+  try {
+    const [rowsRaw, fields] = await pool.query('SELECT column_name FROM information_schema.columns WHERE table_schema=? AND table_name=? AND column_name IN ('+colNames.map(()=>'?').join(',')+')', [schema, table, ...colNames]);
+    const rows = Array.isArray(rowsRaw) && rowsRaw.length && Array.isArray(rowsRaw[0]) && fields
+      ? rowsRaw.map(arr => Object.fromEntries(fields.map((f,i)=> [f.name, arr[i]])))
+      : rowsRaw;
+    const existing = new Set(rows.map(r=> r && r.column_name).filter(Boolean));
+    const filtered = colNames.filter(c=> existing.has(c));
+    if(filtered.length) return filtered;
+  } catch(_) { /* fall back below */ }
+  // Fallback: SHOW COLUMNS
+  try {
+    const [rowsRaw2, fields2] = await pool.query(`SHOW COLUMNS FROM \`${schema}\`.\`${table}\``);
+    const rows2 = Array.isArray(rowsRaw2) && rowsRaw2.length && Array.isArray(rowsRaw2[0]) && fields2
+      ? rowsRaw2.map(arr => Object.fromEntries(fields2.map((f,i)=> [f.name, arr[i]])))
+      : rowsRaw2;
+    // Keys can be 'Field' or 'field' depending on driver
+    const names = rows2.map(r=> r && (r.Field || r.field || r.COLUMN_NAME || r.column_name)).filter(Boolean);
+    const exSet = new Set(names);
+    return colNames.filter(c=> exSet.has(c));
+  } catch(_){ return []; }
+}
+
+const TELEMETRY_DB = process.env.SENSORDB_DATABASE || 'sensordb';
+const TELEMETRY_TABLE = process.env.SENSORDB_TABLE || 'sensor_data';
+const TELEMETRY_TS_COL = process.env.TIMESTAMP_COLUMN || 'Datetime';
+
+// Fetch latest external values for all sensors mapped to a device (using sensor_uuids.txt)
+async function externalLatestForDevice(deviceName){
+  await ready;
+  const sensors = listSensorsForDevice(deviceName);
+  if(!sensors.length) return null;
+  const schema = TELEMETRY_DB; const table = TELEMETRY_TABLE; const tsCol = TELEMETRY_TS_COL;
+  const uuids = sensors.map(s=> s.uuid);
+  // Ensure selected columns exist (filter to avoid SQL errors)
+  const existing = await filterExistingColumns(schema, table, uuids);
+  if(!existing.length) return null;
+  const colsExpr = existing.map(c=> `\`${c}\``).join(', ');
+  const sql = `SELECT UNIX_TIMESTAMP(\`${tsCol}\`)*1000 AS ts, ${colsExpr} FROM \`${schema}\`.\`${table}\` ORDER BY \`${tsCol}\` DESC LIMIT 1`;
+  const [rowsRaw, fields] = await pool.query(sql);
+  const rows = Array.isArray(rowsRaw) && rowsRaw.length && Array.isArray(rowsRaw[0]) && fields
+    ? rowsRaw.map(arr => Object.fromEntries(fields.map((f,i)=> [f.name, arr[i]])))
+    : rowsRaw;
+  if(!rows[0]) return null;
+  const ts = Number(rows[0].ts);
+  const out = { timestamp: ts };
+  for(const s of sensors){
+    if(existing.includes(s.uuid)) out[s.name] = rows[0][s.uuid];
+  }
+  return out;
+}
+
+// Fetch history for all sensors mapped to a device in a time range
+async function externalHistoryForDevice(deviceName, fromTs, toTs, limit=5000){
+  await ready;
+  const sensors = listSensorsForDevice(deviceName);
+  if(!sensors.length) return [];
+  const schema = TELEMETRY_DB; const table = TELEMETRY_TABLE; const tsCol = TELEMETRY_TS_COL;
+  const uuids = sensors.map(s=> s.uuid);
+  const existing = await filterExistingColumns(schema, table, uuids);
+  if(!existing.length) return [];
+  const colsExpr = existing.map(c=> `\`${c}\``).join(', ');
+  const sql = `SELECT UNIX_TIMESTAMP(\`${tsCol}\`)*1000 AS ts, ${colsExpr} FROM \`${schema}\`.\`${table}\` WHERE \`${tsCol}\` BETWEEN FROM_UNIXTIME(?/1000) AND FROM_UNIXTIME(?/1000) ORDER BY \`${tsCol}\` ASC LIMIT ?`;
+  const [rowsRaw, fields] = await pool.query(sql, [fromTs, toTs, limit]);
+  const rows = Array.isArray(rowsRaw) && rowsRaw.length && Array.isArray(rowsRaw[0]) && fields
+    ? rowsRaw.map(arr => Object.fromEntries(fields.map((f,i)=> [f.name, arr[i]])))
+    : rowsRaw;
+  const byUUIDtoName = new Map();
+  for(const s of sensors){ if(existing.includes(s.uuid)) byUUIDtoName.set(s.uuid, s.name); }
+  return rows.map(r=>{
+    const o = { timestamp: Number(r.ts) };
+    for(const uuid of existing){
+      const name = byUUIDtoName.get(uuid);
+      if(name) o[name] = r[uuid];
+    }
+    return o;
+  });
+}
+
 function mapRow(r){ if(!r) return null; return { name: r.name, type: r.type||undefined, floor: Number(r.floor), position: { x: Number(r.pos_x), y: Number(r.pos_y), z: Number(r.pos_z) }, pinned: !!r.pinned }; }
 
 // Devices
@@ -168,9 +299,9 @@ async function deviceHistory(name, from, to, limit=10000){ await ready; const [r
 async function deleteDeviceHistory(name){ await ready; await pool.query('DELETE FROM device_data WHERE device_name=?',[name]); }
 
 // Data sources
-async function listDataSources(){ await ready; const [rows] = await pool.query('SELECT id,name,host,port,database,schema_name AS schema, ssl, created_at FROM data_sources ORDER BY id'); return rows; }
-async function createDataSource(ds){ await ready; const [res] = await pool.query('INSERT INTO data_sources(name,host,port,database,schema_name,username,password,ssl) VALUES(?,?,?,?,?,?,?,?)',[ds.name, ds.host, ds.port, ds.database, ds.schema||null, ds.username||null, ds.password||null, ds.ssl?1:0]); const id=res.insertId; const [rows]=await pool.query('SELECT id,name,host,port,database,schema_name AS schema,ssl,created_at FROM data_sources WHERE id=?',[id]); return rows[0]; }
-async function updateDataSource(id, patch){ await ready; const allow=['name','host','port','database','schema','username','password','ssl']; const sets=[]; const vals=[]; for(const k of allow){ if(patch[k]!==undefined){ const col = k==='schema'?'schema_name':k; sets.push(`${col}=?`); vals.push(patch[k]); } } if(!sets.length){ const [rows]=await pool.query('SELECT id,name,host,port,database,schema_name AS schema,ssl,created_at FROM data_sources WHERE id=?',[id]); return rows[0]||null; } vals.push(id); await pool.query(`UPDATE data_sources SET ${sets.join(', ')} WHERE id=?`, vals); const [rows]=await pool.query('SELECT id,name,host,port,database,schema_name AS schema,ssl,created_at FROM data_sources WHERE id=?',[id]); return rows[0]||null; }
+async function listDataSources(){ await ready; const [rows] = await pool.query('SELECT id,name,host,port,`database`,schema_name AS `schema`, `ssl`, created_at FROM data_sources ORDER BY id'); return rows; }
+async function createDataSource(ds){ await ready; const [res] = await pool.query('INSERT INTO data_sources(name,host,port,`database`,schema_name,username,password,`ssl`) VALUES(?,?,?,?,?,?,?,?)',[ds.name, ds.host, ds.port, ds.database, ds.schema||null, ds.username||null, ds.password||null, ds.ssl?1:0]); const id=res.insertId; const [rows]=await pool.query('SELECT id,name,host,port,`database`,schema_name AS `schema`,`ssl`,created_at FROM data_sources WHERE id=?',[id]); return rows[0]; }
+async function updateDataSource(id, patch){ await ready; const allow=['name','host','port','database','schema','username','password','ssl']; const sets=[]; const vals=[]; for(const k of allow){ if(patch[k]!==undefined){ const col = k==='schema'?'schema_name':k; const colExpr = col==='database'? '`database`' : (col==='ssl'? '`ssl`' : col); sets.push(`${colExpr}=?`); vals.push(patch[k]); } } if(!sets.length){ const [rows]=await pool.query('SELECT id,name,host,port,`database`,schema_name AS `schema`,`ssl`,created_at FROM data_sources WHERE id=?',[id]); return rows[0]||null; } vals.push(id); await pool.query(`UPDATE data_sources SET ${sets.join(', ')} WHERE id=?`, vals); const [rows]=await pool.query('SELECT id,name,host,port,`database`,schema_name AS `schema`,`ssl`,created_at FROM data_sources WHERE id=?',[id]); return rows[0]||null; }
 async function deleteDataSource(id){ await ready; const [mapRows]=await pool.query('SELECT 1 FROM device_timeseries_mappings WHERE data_source_id=? LIMIT 1',[id]); if(mapRows.length) return { error: 'Data source in use' }; await pool.query('DELETE FROM data_sources WHERE id=?',[id]); return { ok: true }; }
 
 // Mappings
@@ -181,19 +312,136 @@ async function deleteDeviceMapping(id){ await ready; await pool.query('DELETE FR
 
 // Introspection (limited – reuse same DB; schema_name acts like namespace; we list tables by information_schema for given schema_name or current DB if null)
 async function listTablesForDataSource(id){ await ready; const [rows]=await pool.query('SELECT * FROM data_sources WHERE id=?',[id]); if(!rows[0]) return null; const schema = rows[0].schema_name || MYSQL_DATABASE; // fallback current DB
-  const [t] = await pool.query('SELECT table_name FROM information_schema.tables WHERE table_schema=? ORDER BY table_name', [schema]); return t.map(r=>r.table_name); }
-async function listColumnsForDataSourceTable(id, table){ await ready; const [rows]=await pool.query('SELECT * FROM data_sources WHERE id=?',[id]); if(!rows[0]) return null; const schema = rows[0].schema_name || MYSQL_DATABASE; const [c] = await pool.query('SELECT column_name, data_type FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position',[schema, table]); return c; }
+  const [tRaw, tf] = await pool.query('SELECT table_name FROM information_schema.tables WHERE table_schema=? ORDER BY table_name', [schema]);
+  const t = Array.isArray(tRaw) && tRaw.length && Array.isArray(tRaw[0]) && tf ? tRaw.map(arr => Object.fromEntries(tf.map((f,i)=> [f.name, arr[i]]))) : tRaw;
+  return t.map(r=> r.table_name); }
+async function listColumnsForDataSourceTable(id, table){ await ready; const [rows]=await pool.query('SELECT * FROM data_sources WHERE id=?',[id]); if(!rows[0]) return null; const schema = rows[0].schema_name || MYSQL_DATABASE; const [cRaw, cf] = await pool.query('SELECT column_name, data_type FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position',[schema, table]); const c = Array.isArray(cRaw) && cRaw.length && Array.isArray(cRaw[0]) && cf ? cRaw.map(arr => Object.fromEntries(cf.map((f,i)=> [f.name, arr[i]]))) : cRaw; return c; }
 
-async function verifyDeviceMapping(sample){ await ready; const required=['data_source_id','table_name','device_id_column','device_identifier_value','timestamp_column','value_columns']; for(const r of required){ if(sample[r]===undefined||sample[r]===null) return { error: `Missing ${r}` }; } if(!Array.isArray(sample.value_columns)||!sample.value_columns.length) return { error: 'value_columns must be non-empty array' }; const [rows]=await pool.query('SELECT * FROM data_sources WHERE id=?',[sample.data_source_id]); if(!rows[0]) return { error: 'data_source not found' }; const ds=rows[0]; const schema = ds.schema_name || MYSQL_DATABASE; const cols = sample.value_columns.map(c=> `\`${c}\``).join(', ');
+async function verifyDeviceMapping(sample){
+  await ready;
+  const required=['data_source_id','table_name','device_id_column','device_identifier_value','timestamp_column','value_columns'];
+  for(const r of required){ if(sample[r]===undefined||sample[r]===null) return { error: `Missing ${r}` }; }
+  if(!Array.isArray(sample.value_columns)||!sample.value_columns.length) return { error: 'value_columns must be non-empty array' };
+  const [rows]=await pool.query('SELECT * FROM data_sources WHERE id=?',[sample.data_source_id]);
+  if(!rows[0]) return { error: 'data_source not found' };
+  const ds=rows[0];
+  const schema = ds.schema_name || MYSQL_DATABASE;
+  const cols = sample.value_columns.map(c=> `\`${c}\``).join(', ');
+
+  // Pivot-mode support: device_id_column === 'COLUMN' means device_identifier_value is the column to read; no WHERE equality
+  if(String(sample.device_id_column).toUpperCase() === 'COLUMN'){
+    const col = sample.value_columns[0];
+    const sql = `SELECT \`${col}\`, UNIX_TIMESTAMP(\`${sample.timestamp_column}\`)*1000 AS ts FROM \`${schema}\`.\`${sample.table_name}\` WHERE \`${col}\` IS NOT NULL ORDER BY \`${sample.timestamp_column}\` DESC LIMIT 5`;
+    try { const [res]=await pool.query(sql); return { ok: true, rows: res, sql }; } catch(e){ return { error: e.message, sql }; }
+  }
+
+  // Default (long/narrow schema)
   const sql = `SELECT ${cols}, UNIX_TIMESTAMP(\`${sample.timestamp_column}\`)*1000 AS ts FROM \`${schema}\`.\`${sample.table_name}\` WHERE \`${sample.device_id_column}\` = ? ORDER BY \`${sample.timestamp_column}\` DESC LIMIT 5`;
   try { const [res]=await pool.query(sql,[sample.device_identifier_value]); return { ok: true, rows: res, sql }; } catch(e){ return { error: e.message, sql }; }
 }
 
-async function fetchDeviceTimeseries(deviceName, fromTs, toTs, limit=2000){ await ready; const [maps]=await pool.query(`SELECT m.*, ds.schema_name AS ds_schema FROM device_timeseries_mappings m JOIN data_sources ds ON m.data_source_id = ds.id WHERE m.device_name=?`, [deviceName]); if(!maps.length) return { series: [] }; const map = maps[0]; const schema = map.ds_schema || MYSQL_DATABASE; const valueColumns = JSON.parse(map.value_columns||'[]'); const cols = valueColumns.map(c=> `\`${c}\``).join(', '); const sql = `SELECT UNIX_TIMESTAMP(\`${map.timestamp_column}\`)*1000 AS ts, ${cols} FROM \`${schema}\`.\`${map.table_name}\` WHERE \`${map.device_id_column}\` = ? AND \`${map.timestamp_column}\` BETWEEN FROM_UNIXTIME(?/1000) AND FROM_UNIXTIME(?/1000) ORDER BY \`${map.timestamp_column}\` ASC LIMIT ?`; const [rows]=await pool.query(sql,[map.device_identifier_value, fromTs, toTs, limit]); return { mapping: { ...map, value_columns: valueColumns }, series: rows }; }
+async function fetchDeviceTimeseries(deviceName, fromTs, toTs, limit=2000){
+  await ready;
+  const [maps]=await pool.query(`SELECT m.*, ds.schema_name AS ds_schema FROM device_timeseries_mappings m JOIN data_sources ds ON m.data_source_id = ds.id WHERE m.device_name=?`, [deviceName]);
+  if(!maps.length) return { series: [] };
+  const map = maps[0];
+  const schema = map.ds_schema || MYSQL_DATABASE;
+  // value_columns may come back as TEXT/JSON (string) or already parsed array depending on driver/config
+  let valueColumns = map.value_columns;
+  if(!Array.isArray(valueColumns)){
+    try { valueColumns = JSON.parse(valueColumns||'[]'); }
+    catch(_){ valueColumns = []; }
+  }
 
-async function fetchLatestForAllMappings(maxLookbackDays=7){ await ready; const [mappings]=await pool.query(`SELECT m.*, ds.schema_name AS ds_schema FROM device_timeseries_mappings m JOIN data_sources ds ON m.data_source_id = ds.id`); if(!mappings.length) return {}; const groups=new Map(); for(const m of mappings){ const valueColumns = JSON.parse(m.value_columns||'[]'); const key=[m.data_source_id,m.table_name,m.device_id_column,m.timestamp_column,valueColumns.join('|')].join('::'); if(!groups.has(key)) groups.set(key,{ meta: {...m, value_columns:valueColumns}, list: [] }); groups.get(key).list.push({...m, value_columns:valueColumns}); }
-  const result={}; for(const g of groups.values()){ const { meta, list } = g; const schema = meta.ds_schema || MYSQL_DATABASE; const ids = list.map(l=> l.device_identifier_value); const cols = meta.value_columns.map(c=> `\`${c}\``).join(', '); const sql = `SELECT * FROM ( SELECT \`${meta.device_id_column}\` AS device_id, UNIX_TIMESTAMP(\`${meta.timestamp_column}\`)*1000 AS ts, ${cols}, ROW_NUMBER() OVER (PARTITION BY \`${meta.device_id_column}\` ORDER BY \`${meta.timestamp_column}\` DESC) rn FROM \`${schema}\`.\`${meta.table_name}\` WHERE \`${meta.timestamp_column}\` > NOW() - INTERVAL ${maxLookbackDays} DAY AND \`${meta.device_id_column}\` IN (${ids.map(()=>'?').join(',')}) ) AS ranked WHERE rn=1`; const [rows]=await pool.query(sql, ids); for(const row of rows){ const mapping = list.find(m=> m.device_identifier_value === row.device_id); if(!mapping) continue; const values={}; for(const c of meta.value_columns) values[c]=row[c]; result[mapping.device_name]={ timestamp:Number(row.ts), values, primary: mapping.primary_value_column? values[mapping.primary_value_column]: undefined, mappingId: mapping.id, range_min: mapping.range_min!=null? Number(mapping.range_min): null, range_max: mapping.range_max!=null? Number(mapping.range_max): null, color_min: mapping.color_min, color_max: mapping.color_max }; } }
-  return result; }
+  // Pivot-mode per-column series
+  if(String(map.device_id_column).toUpperCase() === 'COLUMN'){
+    const col = valueColumns[0];
+    const sql = `SELECT UNIX_TIMESTAMP(\`${map.timestamp_column}\`)*1000 AS ts, \`${col}\` AS \`${col}\` FROM \`${schema}\`.\`${map.table_name}\` WHERE \`${map.timestamp_column}\` BETWEEN FROM_UNIXTIME(?/1000) AND FROM_UNIXTIME(?/1000) ORDER BY \`${map.timestamp_column}\` ASC LIMIT ?`;
+    const [rows]=await pool.query(sql,[fromTs, toTs, limit]);
+    return { mapping: { ...map, value_columns: valueColumns }, series: rows };
+  }
+
+  // Default (long/narrow schema)
+  const cols = valueColumns.map(c=> `\`${c}\``).join(', ');
+  const sql = `SELECT UNIX_TIMESTAMP(\`${map.timestamp_column}\`)*1000 AS ts, ${cols} FROM \`${schema}\`.\`${map.table_name}\` WHERE \`${map.device_id_column}\` = ? AND \`${map.timestamp_column}\` BETWEEN FROM_UNIXTIME(?/1000) AND FROM_UNIXTIME(?/1000) ORDER BY \`${map.timestamp_column}\` ASC LIMIT ?`;
+  const [rows]=await pool.query(sql,[map.device_identifier_value, fromTs, toTs, limit]);
+  return { mapping: { ...map, value_columns: valueColumns }, series: rows };
+}
+
+async function fetchLatestForAllMappings(maxLookbackDays=7){
+  await ready;
+  const [mappings]=await pool.query(`SELECT m.*, ds.schema_name AS ds_schema FROM device_timeseries_mappings m JOIN data_sources ds ON m.data_source_id = ds.id`);
+  if(!mappings.length) return {};
+
+  // Separate pivot-mode and normal mappings
+  const pivot = [];
+  const normal = [];
+  for(const m of mappings){
+    const valueColumns = Array.isArray(m.value_columns) ? m.value_columns : JSON.parse(m.value_columns||'[]');
+    const mm = { ...m, value_columns: valueColumns };
+    if(String(m.device_id_column).toUpperCase() === 'COLUMN') pivot.push(mm); else normal.push(mm);
+  }
+
+  const result={};
+
+  // Handle normal (long/narrow) mappings in grouped batch as before
+  if(normal.length){
+    const groups=new Map();
+    for(const m of normal){
+      const key=[m.data_source_id,m.table_name,m.device_id_column,m.timestamp_column,m.value_columns.join('|')].join('::');
+      if(!groups.has(key)) groups.set(key,{ meta: {...m}, list: [] });
+      groups.get(key).list.push({...m});
+    }
+    for(const g of groups.values()){
+      const { meta, list } = g;
+      const schema = meta.ds_schema || MYSQL_DATABASE;
+      const ids = list.map(l=> l.device_identifier_value);
+      const cols = meta.value_columns.map(c=> `\`${c}\``).join(', ');
+      const sql = `SELECT * FROM ( SELECT \`${meta.device_id_column}\` AS device_id, UNIX_TIMESTAMP(\`${meta.timestamp_column}\`)*1000 AS ts, ${cols}, ROW_NUMBER() OVER (PARTITION BY \`${meta.device_id_column}\` ORDER BY \`${meta.timestamp_column}\` DESC) rn FROM \`${schema}\`.\`${meta.table_name}\` WHERE \`${meta.timestamp_column}\` > NOW() - INTERVAL ${maxLookbackDays} DAY AND \`${meta.device_id_column}\` IN (${ids.map(()=>'?').join(',')}) ) AS ranked WHERE rn=1`;
+      const [rows]=await pool.query(sql, ids);
+      for(const row of rows){
+        const mapping = list.find(m=> m.device_identifier_value === row.device_id);
+        if(!mapping) continue;
+        const values={}; for(const c of meta.value_columns) values[c]=row[c];
+        result[mapping.device_name]={ timestamp:Number(row.ts), values, primary: mapping.primary_value_column? values[mapping.primary_value_column]: undefined, mappingId: mapping.id, range_min: mapping.range_min!=null? Number(mapping.range_min): null, range_max: mapping.range_max!=null? Number(mapping.range_max): null, color_min: mapping.color_min, color_max: mapping.color_max };
+      }
+    }
+  }
+
+  // Handle pivot-mode mappings efficiently: group by (data_source_id, table, timestamp_column) and query latest row once for all columns
+  if(pivot.length){
+    const pGroups = new Map();
+    for(const m of pivot){
+      const key=[m.data_source_id,m.table_name,m.timestamp_column].join('::');
+      if(!pGroups.has(key)) pGroups.set(key,{ meta: {...m}, list: [] });
+      pGroups.get(key).list.push({...m});
+    }
+    for(const g of pGroups.values()){
+      const { meta, list } = g;
+      const schema = meta.ds_schema || MYSQL_DATABASE;
+      // Collect all distinct columns to fetch
+      const colSet = new Set();
+      list.forEach(m=> m.value_columns.forEach(c=> colSet.add(c)));
+      const cols = Array.from(colSet).map(c=> `\`${c}\``).join(', ');
+      const sql = `SELECT UNIX_TIMESTAMP(\`${meta.timestamp_column}\`)*1000 AS ts, ${cols} FROM \`${schema}\`.\`${meta.table_name}\` WHERE \`${meta.timestamp_column}\` > NOW() - INTERVAL ${maxLookbackDays} DAY ORDER BY \`${meta.timestamp_column}\` DESC LIMIT 1`;
+      const [rows]=await pool.query(sql);
+      const row = rows[0];
+      if(!row) continue;
+      for(const m of list){
+        const col = m.value_columns[0];
+        if(result[m.device_name]){
+          // accumulate values for same device
+          result[m.device_name].values[col] = row[col];
+        } else {
+          const values = {}; values[col] = row[col];
+          result[m.device_name] = { timestamp: Number(row.ts), values, primary: m.primary_value_column? values[m.primary_value_column]: row[col], mappingId: m.id, range_min: m.range_min!=null? Number(m.range_min): null, range_max: m.range_max!=null? Number(m.range_max): null, color_min: m.color_min, color_max: m.color_max };
+        }
+      }
+    }
+  }
+
+  return result;
+}
 
 // Rules
 function validateRulePayload(r, partial=false){ const required=['device_name','source_type','field','op','threshold_low']; if(!partial){ for(const k of required){ if(r[k]===undefined) return `Missing field '${k}'`; } } if(r.source_type && !['internal','external'].includes(r.source_type)) return 'Invalid source_type'; if(r.op && !['>','>=','<','<=','=','!=','between','outside'].includes(r.op)) return 'Invalid op'; if(r.op && (r.op==='between'||r.op==='outside') && (r.threshold_high===undefined && !partial)) return 'threshold_high required for between/outside'; return null; }
@@ -217,6 +465,60 @@ async function close(){ try { closed=true; if(pool) await pool.end(); } catch(_)
 module.exports = {
   engine: 'mysql',
   ready,
+  // Sensor index helpers
+  listSensorsForDevice,
+  externalLatestForDevice,
+  externalHistoryForDevice,
+  // Debug helper for external telemetry wiring
+  debugExternalSnapshot: async function(deviceName){
+    await ready;
+    const sensors = listSensorsForDevice(deviceName);
+    const schema = TELEMETRY_DB; const table = TELEMETRY_TABLE; const tsCol = TELEMETRY_TS_COL;
+    const uuids = sensors.map(s=> s.uuid);
+    let existing = [];
+    let allColumns = [];
+    try {
+      // Prefer SHOW COLUMNS for maximum compatibility
+      const [allRaw2, af2] = await pool.query(`SHOW COLUMNS FROM \`${schema}\`.\`${table}\``);
+      const all2 = Array.isArray(allRaw2) && allRaw2.length && Array.isArray(allRaw2[0]) && af2
+        ? allRaw2.map(arr => Object.fromEntries(af2.map((f,i)=> [f.name, arr[i]])))
+        : allRaw2;
+      allColumns = all2.map(r=> r && (r.Field || r.field || r.COLUMN_NAME || r.column_name)).filter(Boolean);
+      existing = await filterExistingColumns(schema, table, uuids);
+    } catch(e){
+      return { error: e.message, stage: 'filterExistingColumns', deviceName, sensors, schema, table, tsCol, allColumns };
+    }
+    const colsExpr = existing.length ? existing.map(c=> `\`${c}\``).join(', ') : '';
+    const sql = `SELECT UNIX_TIMESTAMP(\`${tsCol}\`)*1000 AS ts${colsExpr? ', '+colsExpr: ''} FROM \`${schema}\`.\`${table}\` ORDER BY \`${tsCol}\` DESC LIMIT 1`;
+    try {
+      const [rows] = await pool.query(sql);
+      const latest = rows[0] || null;
+      const sample = {};
+      if(latest){ for(const c of existing){ sample[c] = latest[c]; } }
+      return { deviceName, sensors, existing, latestTs: latest? Number(latest.ts): null, sample, schema, table, tsCol, sql, allColumns };
+    } catch(e){
+      return { error: e.message, stage: 'selectLatest', deviceName, sensors, existing, schema, table, tsCol, sql, allColumns };
+    }
+  },
+  // Debug helper for external history selection for a device
+  debugExternalHistory: async function(deviceName, fromTs, toTs, limit=5){
+    await ready;
+    const sensors = listSensorsForDevice(deviceName);
+    const schema = TELEMETRY_DB; const table = TELEMETRY_TABLE; const tsCol = TELEMETRY_TS_COL;
+    const uuids = sensors.map(s=> s.uuid);
+    const existing = await filterExistingColumns(schema, table, uuids);
+    const colsExpr = existing.length ? existing.map(c=> `\`${c}\``).join(', ') : '';
+    const sql = `SELECT UNIX_TIMESTAMP(\`${tsCol}\`)*1000 AS ts${colsExpr? ', '+colsExpr: ''} FROM \`${schema}\`.\`${table}\` WHERE \`${tsCol}\` BETWEEN FROM_UNIXTIME(?/1000) AND FROM_UNIXTIME(?/1000) ORDER BY \`${tsCol}\` ASC LIMIT ?`;
+    try {
+      const [rows, fields] = await pool.query(sql, [fromTs, toTs, limit]);
+      const sample = rows && rows[0] ? rows[0] : null;
+      const values = {};
+      if(sample){ for(const c of existing){ values[c] = sample[c]; } }
+      return { deviceName, sensors, existing, schema, table, tsCol, sql, count: Array.isArray(rows)? rows.length: 0, firstTs: sample? Number(sample.ts): null, values, fieldNames: Array.isArray(fields)? fields.map(f=> f.name): undefined };
+    } catch(e){
+      return { error: e.message, deviceName, schema, table, tsCol, sql };
+    }
+  },
   listDevices,
   getDeviceByName,
   createDevice,

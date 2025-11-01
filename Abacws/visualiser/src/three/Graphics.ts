@@ -87,8 +87,9 @@ export default class Graphics {
         this.renderer.setSize(this.width, this.height);
         this.renderer.setClearColor(0x000000);
 
-        // Controls setup
-        this.controls.target.set(160, 25, -120);
+    // Controls setup
+    // NOTE: Keep target aligned with DEVICE_OFFSET below so devices and model stay registered
+    this.controls.target.set(160, 25, -120);
         this.controls.minDistance = 50;
         this.camera.position.set(0, 100, 20)
         this.controls.update();
@@ -145,8 +146,8 @@ export default class Graphics {
             this.setDevices(devices);
         } catch {}
 
-        // Add ground plane
-        const groundGeom = new THREE.PlaneBufferGeometry(300, 300, 8, 8);
+    // Add ground plane (centered at model/device origin)
+    const groundGeom = new THREE.PlaneBufferGeometry(300, 300, 8, 8);
         const groundMat = new THREE.MeshBasicMaterial({color: 0x3f3f3f, side: THREE.DoubleSide});
         const groundPlane = new THREE.Mesh(groundGeom, groundMat);
         groundPlane.rotateX(-Math.PI/2);
@@ -239,12 +240,22 @@ export default class Graphics {
         // Clear existing devices
         this.deviceScene.clear();
 
+        // Align incoming device coordinates (which are API-space) to the model-space
+        // The API subtracts the offset from devices.json on import so positions are relative to (0,0,0).
+        // The building GLB and ground plane in this scene are centered around (160, 0, -120).
+        // Apply this offset so markers line up with the model and remain stable while orbiting/zooming.
+        const DEVICE_OFFSET = new THREE.Vector3(160, 0, -120);
+
         // Create geometry for each device
         const geom = DEVICE_GEOM;
         for (const device of devices) {
             const mat = new THREE.MeshPhongMaterial({color: DEVICE_COLOR});
             const cube = new THREE.Mesh(geom, mat);
-            cube.position.set(device.position.x, device.position.y, device.position.z);
+            cube.position.set(
+                device.position.x + DEVICE_OFFSET.x,
+                device.position.y + DEVICE_OFFSET.y,
+                device.position.z + DEVICE_OFFSET.z
+            );
             cube.userData = device;
             this.deviceScene.add(cube);
         }

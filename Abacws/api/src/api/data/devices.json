@@ -1,8 +1,8 @@
 {
   "offset": {
-    "x": -160,
+    "x": 0,
     "y": 0,
-    "z": 120
+    "z": 0
   },
   "devices": [
     {
@@ -10,9 +10,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": 51,
+        "x": 211,
         "y": 73,
-        "z": 24
+        "z": -96
       },
       "pinned": true
     },
@@ -21,9 +21,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -22,
+        "x": 138,
         "y": 73,
-        "z": 12
+        "z": -108
       },
       "pinned": true
     },
@@ -32,9 +32,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": 5,
+        "x": 165,
         "y": 73,
-        "z": 24
+        "z": -96
       },
       "pinned": true
     },
@@ -43,9 +43,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -54,
+        "x": 106,
         "y": 73,
-        "z": 12
+        "z": -108
       },
       "pinned": true
     },
@@ -54,9 +54,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -57,
+        "x": 100,
         "y": 73,
-        "z": -26
+        "z": -146
       },
       "pinned": true
     },
@@ -65,9 +65,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": 51,
+        "x": 211,
         "y": 73,
-        "z": -19
+        "z": -139
       },
       "pinned": true
     },
@@ -76,9 +76,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": 58,
+        "x": 218,
         "y": 73,
-        "z": -8
+        "z": -128
       },
       "pinned": true
     },
@@ -87,9 +87,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -22,
+        "x": 138,
         "y": 73,
-        "z": -8
+        "z": -128
       },
       "pinned": true
     },
@@ -98,9 +98,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -110,
+        "x": 50,
         "y": 73,
-        "z": -19
+        "z": -139
       },
       "pinned": true
     },
@@ -109,9 +109,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -110,
+        "x": 50,
         "y": 73,
-        "z": 24
+        "z": -96
       },
       "pinned": true
     },
@@ -120,9 +120,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": 99,
+        "x": 250,
         "y": 73,
-        "z": -19
+        "z": -139
       },
       "pinned": true
     },
@@ -131,20 +131,20 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -74,
+        "x": 86,
         "y": 73,
-        "z": 24
+        "z": -96
       },
-      "pinned": true
+      "pinned": false
     },
     {
       "name": "node_5.13",
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -54,
+        "x": 106,
         "y": 73,
-        "z": -8
+        "z": -128
       },
       "pinned": true
     },
@@ -153,9 +153,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": 58,
+        "x": 218,
         "y": 73,
-        "z": 12
+        "z": -108
       },
       "pinned": true
     },
@@ -164,9 +164,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": 30,
+        "x": 190,
         "y": 73,
-        "z": -8
+        "z": -128
       },
       "pinned": true
     },
@@ -175,9 +175,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -100,
+        "x": 50,
         "y": 73,
-        "z": 2
+        "z": -96
       },
       "pinned": true
     },
@@ -186,9 +186,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": -32,
+        "x": 128,
         "y": 73,
-        "z": 24
+        "z": -96
       },
       "pinned": true
     },
@@ -197,9 +197,9 @@
       "type": "Corridor",
       "floor": 5,
       "position": {
-        "x": 83,
+        "x": 243,
         "y": 73,
-        "z": 24
+        "z": -96
       },
       "pinned": true
     },
@@ -208,9 +208,20 @@
       "type": "private_room",
       "floor": 5,
       "position": {
-        "x": 16,
+        "x": 176,
         "y": 73,
-        "z": -12
+        "z": -132
+      },
+      "pinned": true
+    },
+    {
+      "name": "node_5.20",
+      "type": "smart lab",
+      "floor": 5,
+      "position": {
+        "x": 249,
+        "y": 73,
+        "z": -111
       },
       "pinned": true
     },
@@ -219,9 +230,9 @@
       "type": "teaching_space",
       "floor": 5,
       "position": {
-        "x": 103,
+        "x": 262,
         "y": 73,
-        "z": 33
+        "z": -87
       },
       "pinned": true
     },
@@ -230,9 +241,9 @@
       "type": "teaching_space",
       "floor": 5,
       "position": {
-        "x": -54,
+        "x": 104,
         "y": 73,
-        "z": -33
+        "z": -153
       },
       "pinned": true
     },
@@ -241,9 +252,9 @@
       "type": "teaching_space",
       "floor": 5,
       "position": {
-        "x": 30,
+        "x": 190,
         "y": 73,
-        "z": 12
+        "z": -108
       },
       "pinned": true
     },
@@ -252,9 +263,9 @@
       "type": "teaching_space",
       "floor": 5,
       "position": {
-        "x": 112,
+        "x": 272,
         "y": 73,
-        "z": 33
+        "z": -87
       },
       "pinned": true
     },
@@ -263,9 +274,9 @@
       "type": "teaching_space",
       "floor": 5,
       "position": {
-        "x": -70,
+        "x": 90,
         "y": 73,
-        "z": -19
+        "z": -139
       },
       "pinned": true
     },
@@ -274,9 +285,9 @@
       "type": "teaching_space",
       "floor": 5,
       "position": {
-        "x": 65,
+        "x": 225,
         "y": 73,
-        "z": -26
+        "z": -146
       },
       "pinned": true
     },
@@ -285,9 +296,9 @@
       "type": "teaching_space",
       "floor": 5,
       "position": {
-        "x": 65,
+        "x": 225,
         "y": 73,
-        "z": -33
+        "z": -153
       },
       "pinned": true
     },
@@ -296,20 +307,20 @@
       "type": "lift_out",
       "floor": 5,
       "position": {
-        "x": -96,
+        "x": 64,
         "y": 73,
-        "z": 24
+        "z": -87
       },
-      "pinned": false
+      "pinned": true
     },
     {
       "name": "node_5.30",
       "type": "lift_out",
       "floor": 5,
       "position": {
-        "x": 116,
+        "x": 276,
         "y": 73,
-        "z": -19
+        "z": -139
       },
       "pinned": true
     },
@@ -318,9 +329,9 @@
       "type": "staircase_out",
       "floor": 5,
       "position": {
-        "x": 114,
+        "x": 274,
         "y": 73,
-        "z": 24
+        "z": -96
       },
       "pinned": true
     },
@@ -329,9 +340,9 @@
       "type": "staircase_out",
       "floor": 5,
       "position": {
-        "x": -32,
+        "x": 128,
         "y": 73,
-        "z": -19
+        "z": -139
       },
       "pinned": true
     },
@@ -340,9 +351,9 @@
       "type": "shared_room",
       "floor": 5,
       "position": {
-        "x": 120,
+        "x": 280,
         "y": 73,
-        "z": 33
+        "z": -87
       },
       "pinned": true
     },
@@ -351,22 +362,11 @@
       "type": "shared_room",
       "floor": 5,
       "position": {
-        "x": 107,
+        "x": 267,
         "y": 73,
-        "z": 2
+        "z": -118
       },
       "pinned": true
-    },
-    {
-      "name": "node_5.20",
-      "type": "demo_sensor",
-      "floor": 5,
-      "position": {
-        "x": 121.344,
-        "y": 70,
-        "z": 32.355000000000004
-      },
-      "pinned": false
     }
   ]
 }

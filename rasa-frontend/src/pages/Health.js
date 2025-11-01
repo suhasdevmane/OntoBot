@@ -4,7 +4,7 @@ import TopNav from '../components/TopNav';
 
 const endpointList = [
   { name: 'Visualiser', url: 'http://localhost:8090/health' },
-  { name: 'API', url: 'http://localhost:8091/health' },
+  { name: 'API', url: 'http://localhost:5000/health' },
   { name: 'ThingsBoard', url: 'http://localhost:8082/' },
   { name: 'pgAdmin', url: 'http://localhost:5050/' },
   { name: 'Jena Fuseki', url: 'http://localhost:3030/$/ping' },
@@ -17,6 +17,7 @@ const endpointList = [
   { name: 'Duckling', url: 'http://localhost:8000/' },
   { name: 'File Server', url: 'http://localhost:8080/health' },
   { name: 'NL2SPARQL', url: 'http://localhost:6005/health' },
+  { name: 'Decider Service', url: 'http://localhost:6009/health' },
   { name: 'Ollama', url: 'http://localhost:11434/api/version' },
 ];
 

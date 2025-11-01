@@ -1,7 +1,7 @@
 const cors = require('cors');
 const express = require('express');
 const { consoleLogErrors, errorHandler, mongodbLogErrors } = require('./middleware');
-const { devices, docs, healthcheck, query, admin, datasources, mappings, latest, rules, stream } = require('./routers');
+const { devices, docs, healthcheck, query, admin, datasources, mappings, latest, rules, stream, debug } = require('./routers');
 
 /** Express app */
 const api = express();
@@ -22,6 +22,7 @@ api.use("/mappings", mappings);
 api.use("/latest", latest);
 api.use('/rules', rules);
 api.use('/stream', stream);
+api.use('/debug', debug);
 
 // Register error handlers
 api.use(mongodbLogErrors);

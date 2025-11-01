@@ -324,7 +324,7 @@ services:
     image: devmanenvision/busybox:latest
     container_name: jena-fuseki-db
     volumes:
-      - jena-bldg3-data:/fuseki
+      - jena-data3:/fuseki
     command: tail -f /dev/null
     networks:
       - ontobot-network
@@ -336,11 +336,11 @@ services:
     ports:
       - "3030:3030"
     volumes_from:
-      - fuseki-db
+      - jena-data3
     volumes:
-      - jena-bldg3-config:/fuseki/config
-      - jena-bldg3-datasets:/fuseki/databases
-      - jena-bldg3-backups:/fuseki/backups
+      - jena-data3-config:/fuseki/config
+      - jena-data3-datasets:/fuseki/databases
+      - jena-data3-backups:/fuseki/backups
     restart: always
     depends_on:
       - fuseki-db
@@ -450,16 +450,16 @@ networks:
     external: true
 
 volumes:
-  jena-bldg3-data:
+  jena-data3:
   tb-cs-data:
   cassandra-data:
   mytb-cas-data:
   mytb-cas-logs:
   mysql-data:
   ollama-models:
-  jena-bldg3-config:
-  jena-bldg3-datasets:
-  jena-bldg3-backups:
+  jena-data3-config:
+  jena-data3-datasets:
+  jena-data3-backups:
   microservices-bldg3-plugins:
   microservices-bldg3-meta:
   microservices-bldg3-cache:

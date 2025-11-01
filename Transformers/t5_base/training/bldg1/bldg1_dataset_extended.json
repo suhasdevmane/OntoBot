@@ -91385,7 +91385,7 @@
     "sparql": "SELECT ?location WHERE { bldg:Air_Quality_Level_Sensor_5.01 brick:hasLocation ?location . }"
   },
   {
-    "question": "Show me the exact spot where  Air Quality Level 5.01 is placed.",
+    "question": "Show me the exact spot where  Air_Quality_Level_Sensor_5.01 is placed.",
     "entities": "bldg:Air_Quality_Level_Sensor_5.01",
     "sparql": "SELECT ?location WHERE { bldg:Air_Quality_Level_Sensor_5.01 brick:hasLocation ?location . }"
   },

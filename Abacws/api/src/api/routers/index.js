@@ -14,6 +14,7 @@ if (DB_ENGINE === 'postgres') {
   base.latest = require('./latest');
   base.stream = require('./stream');
   base.rules = require('./rules');
+  base.debug = require('./debug');
 } else {
   base.healthcheck = require('./healthcheck');
   base.devices = require('./devices');
@@ -24,6 +25,7 @@ if (DB_ENGINE === 'postgres') {
   base.latest = require('./latest');
   base.stream = require('./stream');
   base.rules = require('./rules');
+  base.debug = require('./debug');
 }
 
 module.exports = base;

@@ -62,3 +62,19 @@ uvicorn app.main:app --reload --port 6009
 - Extend training data with building-specific intents and phrasing.
 - Define mapping from question categories to `analysis_type` aligned with your sensors and analytics.
 - Keep a rule-based fallback for robustness when models are absent.
+
+After adding new functions, **retrain decider service** to recognize them:
+
+```powershell
+cd decider-service
+
+# 1. Generate new training data with your new analytics types
+python data/generate_decider_data.py
+
+# 2. Retrain models
+python training/train.py --data data/decider_training.auto.jsonl
+
+# 3. Rebuild & restart decider service
+docker compose -f ../docker-compose.bldg1.yml build decider-service
+docker compose -f ../docker-compose.bldg1.yml up -d decider-service
+```

@@ -1,0 +1,2779 @@
+# HVAC Analytics Functions (scaffold)
+# Style: follows analyze_formaldehyde_levels signature and behavior
+# Input: nested or flat JSON-like payloads; combines readings across keys; outputs stats + alerts.
+
+
+def analyze_tvoc_levels(sensor_data, threshold=None):
+    """
+    Analyzes TVOC sensor readings from a nested JSON structure.
+
+    Aggregates readings for TVOC-like keys across groups, computes summary stats,
+    and flags if the latest reading exceeds the threshold.
+
+    Expected input (as a Python dict or JSON string):
+      {
+         "1": {
+             "TVOC_Level_Sensor1": {
+                 "timeseries_data": [
+                     {"datetime": "2025-02-10 05:31:59", "reading_value": 180.0},
+                     {"datetime": "2025-02-10 05:32:11", "reading_value": 220.5}
+                 ]
+             }
+         },
+         "2": {
+             "TVOC_Level_Sensor2": {
+                 "timeseries_data": [
+                     {"datetime": "2025-02-10 05:35:00", "reading_value": 310.2},
+                     {"datetime": "2025-02-10 05:35:12", "reading_value": 295.4}
+                 ]
+             }
+         }
+      }
+
+    Returns a dictionary containing:
+      - mean, min, max, std, and latest reading_value.
+      - an alert message if the latest reading exceeds the threshold.
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No TVOC data available"}
+
+    tvoc_pred = _key_matcher(["tvoc", "voc"])  # common naming
+    keys = _select_keys(flat, tvoc_pred, fallback_to_all=(len(flat) == 1))
+    if not keys:
+        return {"error": "No TVOC-like keys found"}
+
+    all_readings = []
+    for k in keys:
+        all_readings.extend(flat.get(k, []))
+    df = _df_from_readings(all_readings)
+    if df.empty:
+        return {"error": "Empty TVOC series"}
+
+    latest = float(df.iloc[-1]["reading_value"]) if not df.empty else None
+    # TVOC indoor guidance varies; default to 500 µg/m³ as a conservative short-term threshold
+    if threshold is None:
+        threshold = 500.0
+    summary = {
+        "mean": float(df["reading_value"].mean()),
+        "min": float(df["reading_value"].min()),
+        "max": float(df["reading_value"].max()),
+        "std": float(df["reading_value"].std()),
+        "latest": latest,
+        "unit": "µg/m³",
+        "acceptable_max": float(threshold),
+    }
+    if latest is not None:
+        summary["alert"] = (
+            "High TVOC level" if latest > float(threshold) else "Normal TVOC level"
+        )
+    else:
+        summary["alert"] = "No readings"
+    return summary
+
+
+def analyze_ammonia_levels(sensor_data, threshold=None):
+    """
+    Analyzes Ammonia (NH3) sensor readings from a nested JSON structure.
+
+    Aggregates readings for ammonia-like keys across groups, computes summary stats,
+    and flags if the latest reading exceeds the threshold.
+
+    Expected input (as a Python dict or JSON string):
+      {
+         "1": {
+             "Ammonia_Level_Sensor1": {
+                 "timeseries_data": [
+                     {"datetime": "2025-02-10 05:31:59", "reading_value": 12.5},
+                     {"datetime": "2025-02-10 05:32:11", "reading_value": 13.2}
+                 ]
+             }
+         },
+         "2": {
+             "Ammonia_Level_Sensor2": {
+                 "timeseries_data": [
+                     {"datetime": "2025-02-10 05:35:00", "reading_value": 18.0},
+                     {"datetime": "2025-02-10 05:35:12", "reading_value": 19.1}
+                 ]
+             }
+         }
+      }
+
+    Returns a dictionary containing:
+      - mean, min, max, std, and latest reading_value.
+      - an alert message if the latest reading exceeds the threshold.
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No ammonia data available"}
+
+    nh3_pred = _key_matcher(["ammonia", "nh3"])  # common naming
+    keys = _select_keys(flat, nh3_pred, fallback_to_all=(len(flat) == 1))
+    if not keys:
+        return {"error": "No ammonia-like keys found"}
+
+    all_readings = []
+    for k in keys:
+        all_readings.extend(flat.get(k, []))
+    df = _df_from_readings(all_readings)
+    if df.empty:
+        return {"error": "Empty ammonia series"}
+
+    latest = float(df.iloc[-1]["reading_value"]) if not df.empty else None
+    # Default threshold: 25 ppm (illustrative short-term limit; adjust per local standards)
+    if threshold is None:
+        threshold = 25.0
+    summary = {
+        "mean": float(df["reading_value"].mean()),
+        "min": float(df["reading_value"].min()),
+        "max": float(df["reading_value"].max()),
+        "std": float(df["reading_value"].std()),
+        "latest": latest,
+        "unit": "ppm",
+        "acceptable_max": float(threshold),
+    }
+    if latest is not None:
+        summary["alert"] = (
+            "High ammonia level" if latest > float(threshold) else "Normal ammonia level"
+        )
+    else:
+        summary["alert"] = "No readings"
+    return summary
+
+
+def analyze_missing_data_scan(sensor_data, expected_freq=None):
+    """
+    Scans for gaps and NULLs across each detected series; reports coverage %, longest gap, and gap timestamps.
+
+    Expected input (nested or flat):
+      {
+        "1": { "Some_Sensor": { "timeseries_data": [ {"datetime":"2025-02-10 05:31:59","reading_value":1.0}, ... ] } },
+        "2": { ... }
+      }
+
+    Parameters:
+      - expected_freq: optional pandas offset alias like "1min" or "5min" to compute coverage more strictly.
+
+    Returns: dict key -> { coverage_pct, points, null_count, longest_gap_seconds, top_gaps: [ {start,end,duration_s} ] }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+
+    out = {}
+    for key, readings in flat.items():
+        df = _df_from_readings(readings)
+        if df.empty:
+            out[str(key)] = {"coverage_pct": 0.0, "points": 0, "null_count": 0, "longest_gap_seconds": None, "top_gaps": []}
+            continue
+        df = df.sort_values("timestamp")
+        null_count = int(df["reading_value"].isna().sum())
+        points = int(len(df))
+        # compute gaps between timestamps
+        diffs = df["timestamp"].diff().dt.total_seconds().fillna(0)
+        longest_gap = float(diffs.max()) if len(diffs) else 0.0
+        # top 3 gaps (exclude 0)
+        gap_rows = (
+            df.assign(prev_ts=df["timestamp"].shift(1), gap_s=diffs)
+              .query("gap_s > 0")
+              .sort_values("gap_s", ascending=False)
+              .head(3)
+        )
+        top_gaps = []
+        for _, r in gap_rows.iterrows():
+            top_gaps.append({
+                "start": r["prev_ts"].strftime("%Y-%m-%d %H:%M:%S") if pd.notna(r["prev_ts"]) else None,
+                "end": r["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if pd.notna(r["timestamp"]) else None,
+                "duration_s": float(r["gap_s"]),
+            })
+        # approximate coverage if expected_freq provided
+        if expected_freq:
+            try:
+                full_range = pd.date_range(start=df["timestamp"].min(), end=df["timestamp"].max(), freq=expected_freq)
+                coverage_pct = 100.0 * (points / max(1, len(full_range)))
+            except Exception:
+                coverage_pct = 100.0
+        else:
+            coverage_pct = 100.0  # without a target cadence, assume observed coverage
+        out[str(key)] = {
+            "coverage_pct": round(float(coverage_pct), 2),
+            "points": points,
+            "null_count": null_count,
+            "longest_gap_seconds": longest_gap if longest_gap > 0 else 0.0,
+            "top_gaps": top_gaps,
+        }
+    return out
+
+
+def analyze_flatline_detector(sensor_data, min_duration_points=5):
+    """
+    Detects flatline periods where reading_value remains constant for a minimum run length.
+
+    Parameters:
+      - min_duration_points: minimum consecutive identical points to consider flatline.
+
+    Returns: dict key -> { flatline_periods: [ {start, end, value, length} ], count, severity }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+
+    out = {}
+    for key, readings in flat.items():
+        df = _df_from_readings(readings)
+        if df.empty:
+            out[str(key)] = {"flatline_periods": [], "count": 0, "severity": "none"}
+            continue
+        df = df.sort_values("timestamp")
+        vals = df["reading_value"].tolist()
+        ts = df["timestamp"].tolist()
+        periods = []
+        start_idx = 0
+        for i in range(1, len(vals)+1):
+            if i == len(vals) or vals[i] != vals[start_idx]:
+                length = i - start_idx
+                if length >= int(min_duration_points):
+                    periods.append({
+                        "start": ts[start_idx].strftime("%Y-%m-%d %H:%M:%S"),
+                        "end": ts[i-1].strftime("%Y-%m-%d %H:%M:%S"),
+                        "value": float(vals[start_idx]) if pd.notna(vals[start_idx]) else None,
+                        "length": int(length),
+                    })
+                start_idx = i
+        count = len(periods)
+        severity = "high" if count >= 3 else ("medium" if count == 2 else ("low" if count == 1 else "none"))
+        out[str(key)] = {"flatline_periods": periods, "count": count, "severity": severity}
+    return out
+
+
+def analyze_spike_outliers(sensor_data, method="iqr", threshold=1.5, robust=True):
+    """
+    Flags spikes/outliers per series using IQR or robust z-score.
+
+    Returns: dict key -> [ {timestamp, reading_value, score, method} ]
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+    out = {}
+    for key, readings in flat.items():
+        df = _df_from_readings(readings)
+        if df.empty:
+            out[str(key)] = []
+            continue
+        if method == "iqr":
+            Q1 = df["reading_value"].quantile(0.25)
+            Q3 = df["reading_value"].quantile(0.75)
+            IQR = Q3 - Q1
+            lower = Q1 - threshold * IQR
+            upper = Q3 + threshold * IQR
+            mask = (df["reading_value"] < lower) | (df["reading_value"] > upper)
+            an = df.loc[mask].copy()
+            an["score"] = 0.0
+        else:
+            if robust:
+                med = float(df["reading_value"].median())
+                mad = float(np.median(np.abs(df["reading_value"] - med)))
+                mad = mad if mad != 0 else 1.0
+                df["score"] = 0.6745 * (df["reading_value"] - med) / mad
+            else:
+                mu = float(df["reading_value"].mean())
+                sigma = float(df["reading_value"].std() or 1.0)
+                df["score"] = (df["reading_value"] - mu) / sigma
+            an = df[np.abs(df["score"]) > threshold]
+        an["timestamp"] = an["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        out[str(key)] = an[["timestamp", "reading_value", "score"]].assign(method=method).to_dict(orient="records")
+    return out
+
+
+def analyze_sensor_drift_bias(sensor_data, reference_predicates=None):
+    """
+    Detects slow drift and bias by comparing paired sensors. If reference_predicates not provided,
+    pairs keys by common substrings (e.g., supply vs return temperatures).
+
+    Returns: dict pair -> { drift_per_day, bias_mean, confidence }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat or len(flat) < 2:
+        return {"error": "Need at least two series for drift/bias comparison"}
+
+    keys = list(flat.keys())
+    results = {}
+    # Simple O(n^2) pairing heuristic; in production, pass explicit reference groups
+    for i in range(len(keys)):
+        for j in range(i+1, len(keys)):
+            k1, k2 = str(keys[i]), str(keys[j])
+            df1 = _df_from_readings(flat[keys[i]])
+            df2 = _df_from_readings(flat[keys[j]])
+            if df1.empty or df2.empty:
+                continue
+            mm = pd.merge_asof(df1.sort_values("timestamp"), df2.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_1","_2"))
+            mm = mm.dropna(subset=["reading_value_1","reading_value_2"]) 
+            if mm.empty:
+                continue
+            # Bias as mean difference
+            bias = float((mm["reading_value_1"] - mm["reading_value_2"]).mean())
+            # Drift via linear regression of difference vs time (days)
+            t_days = (mm["timestamp"] - mm["timestamp"].min()).dt.total_seconds() / 86400.0
+            try:
+                slope = float(np.polyfit(t_days, (mm["reading_value_1"] - mm["reading_value_2"]).values, 1)[0]) if len(mm) >= 2 else 0.0
+            except Exception:
+                slope = 0.0
+            results[f"{k1}__vs__{k2}"] = {"drift_per_day": slope, "bias_mean": bias, "confidence": "low" if len(mm) < 20 else "medium" if len(mm) < 100 else "high"}
+    return results
+
+
+def analyze_range_validation(sensor_data, ranges=None):
+    """
+    Validates readings against physical/standard ranges per key.
+
+    Parameters:
+      - ranges: optional dict {key_or_pattern: (min,max)}; if None, infer from UK_INDOOR_STANDARDS where possible.
+
+    Returns: dict key -> { percent_in_range, violations: [ {timestamp, value} ] }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+
+    # derive defaults if not provided
+    if ranges is None:
+        ranges = {}
+        for key in flat.keys():
+            kl = str(key).lower()
+            if "temperature" in kl or re.search(r"\btemp\b", kl):
+                lo, hi = UK_INDOOR_STANDARDS["temperature_c"]["range"]
+                ranges[key] = (lo, hi)
+            elif "humidity" in kl or kl in ("rh", "relative_humidity"):
+                lo, hi = UK_INDOOR_STANDARDS["humidity_rh"]["range"]
+                ranges[key] = (lo, hi)
+            elif "co2" in kl:
+                lo, hi = UK_INDOOR_STANDARDS["co2_ppm"]["range"]
+                ranges[key] = (lo, hi)
+            elif ("co" in kl and "co2" not in kl) or "carbon_monoxide" in kl:
+                ranges[key] = (0, UK_INDOOR_STANDARDS["co_ppm"]["max"])
+            elif "pm10" in kl:
+                ranges[key] = (0, UK_INDOOR_STANDARDS["pm10_ugm3"]["max"])
+            elif ("pm2.5" in kl) or ("pm2_5" in kl) or ("pm25" in kl):
+                ranges[key] = (0, UK_INDOOR_STANDARDS["pm2.5_ugm3"]["max"])
+            elif ("formaldehyde" in kl) or ("hcho" in kl):
+                ranges[key] = (0, UK_INDOOR_STANDARDS["hcho_mgm3"]["max"])
+
+    out = {}
+    for key, readings in flat.items():
+        df = _df_from_readings(readings)
+        if df.empty:
+            out[str(key)] = {"percent_in_range": None, "violations": []}
+            continue
+        rng = None
+        if key in ranges:
+            rng = ranges[key]
+        else:
+            # try pattern match
+            kl = str(key).lower()
+            for rk, r in ranges.items():
+                rkl = str(rk).lower()
+                if rkl in kl or kl in rkl:
+                    rng = r
+                    break
+        if rng is None:
+            out[str(key)] = {"percent_in_range": None, "violations": [], "note": "no range available"}
+            continue
+        lo, hi = rng
+        mask_ok = df["reading_value"].between(lo, hi, inclusive="both")
+        pct = 100.0 * float(mask_ok.mean())
+        viol = df.loc[~mask_ok, ["timestamp", "reading_value"]].copy()
+        viol["timestamp"] = viol["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        out[str(key)] = {"percent_in_range": round(pct, 2), "violations": viol.to_dict(orient="records"), "range": {"min": lo, "max": hi}}
+    return out
+
+
+def analyze_timestamp_consistency(sensor_data):
+    """
+    Checks ordering and duplicates; returns duplicate counts and whether series is strictly increasing.
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+    out = {}
+    for key, readings in flat.items():
+        df = _df_from_readings(readings)
+        if df.empty:
+            out[str(key)] = {"duplicates": 0, "strictly_increasing": True}
+            continue
+        dup = int(df["timestamp"].duplicated().sum())
+        strictly_inc = bool((df["timestamp"].diff().dropna() > pd.Timedelta(0)).all())
+        out[str(key)] = {"duplicates": dup, "strictly_increasing": strictly_inc}
+    return out
+
+
+def analyze_pm_levels(sensor_data, thresholds=None):
+    """
+    PM analysis for PM1/PM2.5/PM10 groups; computes stats and alerts vs thresholds.
+
+    Expected input: nested timeseries; keys containing pm1, pm2.5/pm2_5/pm25, pm10.
+
+    Returns: dict pm_type -> summary
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No PM data available"}
+    if thresholds is None:
+        thresholds = {"pm1": 50, "pm2.5": 35, "pm2_5": 35, "pm10": 50}
+    groups = {"pm1": [], "pm2.5": [], "pm10": []}
+    for k in flat.keys():
+        kl = str(k).lower()
+        if "pm10" in kl:
+            groups["pm10"].append(k)
+        elif ("pm2.5" in kl) or ("pm2_5" in kl) or ("pm25" in kl):
+            groups["pm2.5"].append(k)
+        elif kl.startswith("pm1") or ("pm1.0" in kl) or ("pm1_0" in kl):
+            groups["pm1"].append(k)
+    out = {}
+    for pm_type, keys in groups.items():
+        if not keys:
+            continue
+        all_r = []
+        for k in keys:
+            all_r.extend(flat.get(k, []))
+        df = _df_from_readings(all_r)
+        if df.empty:
+            out[pm_type] = {"error": "No data available"}
+            continue
+        latest = float(df.iloc[-1]["reading_value"]) if not df.empty else None
+        unit = "µg/m³"
+        th = None
+        for kv in [pm_type, pm_type.replace(".", "_"), pm_type.replace(".", "")]:
+            if kv in thresholds:
+                th = thresholds[kv]
+                break
+        summary = {
+            "mean": float(df["reading_value"].mean()),
+            "min": float(df["reading_value"].min()),
+            "max": float(df["reading_value"].max()),
+            "std": float(df["reading_value"].std()),
+            "latest": latest,
+            "unit": unit,
+        }
+        if latest is not None and th is not None:
+            summary["alert"] = (f"High {pm_type} reading" if latest > th else f"Normal {pm_type} reading")
+            summary["threshold"] = {"value": float(th), "unit": unit}
+        out[pm_type] = summary
+    if not out:
+        return {"error": "No PM-like keys found"}
+    return out
+
+
+def analyze_iaq_composite(sensor_data):
+    """
+    Computes a composite IAQ score from available pollutants (PM2.5, PM10, NO2, CO, CO2).
+
+    Returns: { IAQ: score, Status: label, Components: {pollutant: component}, Units: {pollutant: unit} }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No data available for IAQ calculation"}
+    thresholds = {"pm2.5": 35, "pm10": 50, "no2": 40, "co": 9, "co2": 1000}
+    weights = {"pm2.5": 0.3, "pm10": 0.2, "no2": 0.2, "co": 0.15, "co2": 0.15}
+    groups = {k: [] for k in thresholds.keys()}
+    for key in flat.keys():
+        kl = str(key).lower()
+        if "pm10" in kl:
+            groups["pm10"].append(key)
+        if ("pm2.5" in kl) or ("pm2_5" in kl) or ("pm25" in kl):
+            groups["pm2.5"].append(key)
+        if "no2" in kl:
+            groups["no2"].append(key)
+        if (kl == "co") or ("co_sensor" in kl) or (("carbon_monoxide" in kl) and ("co2" not in kl)):
+            groups["co"].append(key)
+        if "co2" in kl:
+            groups["co2"].append(key)
+    components = {}
+    for pol, keys in groups.items():
+        if not keys:
+            continue
+        rd = []
+        for k in keys:
+            rd.extend(flat.get(k, []))
+        df = _df_from_readings(rd)
+        if df.empty:
+            continue
+        latest = float(df.iloc[-1]["reading_value"]) if not df.empty else None
+        if latest is None:
+            continue
+        components[pol] = (latest / thresholds[pol]) * weights[pol]
+    if not components:
+        return {"error": "Insufficient pollutant data"}
+    iaq = float(sum(components.values()))
+    if iaq < 0.5:
+        status = "Good"
+    elif iaq < 1:
+        status = "Moderate"
+    elif iaq < 1.5:
+        status = "Unhealthy for Sensitive Groups"
+    else:
+        status = "Unhealthy"
+    units = {"pm2.5": "µg/m³", "pm10": "µg/m³", "no2": "µg/m³", "co": "ppm", "co2": "ppm"}
+    return {"IAQ": round(iaq, 3), "Status": status, "Components": {k: round(v,3) for k, v in components.items()}, "Units": units}
+
+
+def analyze_humidity_profile(sensor_data, acceptable_range=None):
+    """
+    Computes RH comfort/mold risk profile: time-in-range and exceedances.
+
+    Returns: { mean, min, max, latest, time_in_range_pct, high_rh_hours, alert }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No humidity data available"}
+    rh_pred = _key_matcher(["humidity", "relative_humidity", "rh"])
+    keys = _select_keys(flat, rh_pred, fallback_to_all=(len(flat)==1))
+    if not keys:
+        return {"error": "No RH-like keys found"}
+    all_r = []
+    for k in keys:
+        all_r.extend(flat.get(k, []))
+    df = _df_from_readings(all_r)
+    if df.empty:
+        return {"error": "Empty humidity series"}
+    if acceptable_range is None:
+        acceptable_range = UK_INDOOR_STANDARDS["humidity_rh"]["range"]
+    lo, hi = acceptable_range
+    mask = df["reading_value"].between(lo, hi, inclusive="both")
+    time_in_range = float(mask.mean()) * 100.0
+    latest = float(df.iloc[-1]["reading_value"]) if not df.empty else None
+    high_rh_hours = float((~mask).sum())  # count of points; without cadence assume 1 per point
+    alert = "Mold risk" if latest is not None and latest > hi else ("Too dry" if latest is not None and latest < lo else "Normal")
+    return {
+        "mean": float(df["reading_value"].mean()),
+        "min": float(df["reading_value"].min()),
+        "max": float(df["reading_value"].max()),
+        "latest": latest,
+        "unit": "%",
+        "acceptable_range": {"min": lo, "max": hi, "unit": "%"},
+        "time_in_range_pct": round(time_in_range, 2),
+        "high_rh_count": int((df["reading_value"] > hi).sum()),
+        "low_rh_count": int((df["reading_value"] < lo).sum()),
+        "alert": alert,
+    }
+
+
+def analyze_dewpoint_tracking(sensor_data):
+    """
+    Computes dewpoint from temperature and RH; flags condensation risk heuristically.
+
+    Requires: temperature-like and RH-like series present.
+
+    Returns: { dewpoint_latest, dewpoint_mean, risk }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+    temp_pred = _key_matcher(["temperature", "temp"], exclude_substrs=["attempt"])  # avoid 'attempt'
+    rh_pred = _key_matcher(["humidity", "relative_humidity", "rh"])
+    t_keys = _select_keys(flat, temp_pred, fallback_to_all=False)
+    rh_keys = _select_keys(flat, rh_pred, fallback_to_all=False)
+    if not t_keys or not rh_keys:
+        return {"error": "Need both temperature and RH series"}
+    # combine
+    t_df = _df_from_readings(sum((flat[k] for k in t_keys), []))
+    rh_df = _df_from_readings(sum((flat[k] for k in rh_keys), []))
+    if t_df.empty or rh_df.empty:
+        return {"error": "Insufficient readings for dewpoint"}
+    mm = pd.merge_asof(t_df.sort_values("timestamp"), rh_df.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_t","_rh"))
+    mm = mm.dropna(subset=["reading_value_t","reading_value_rh"]) 
+    if mm.empty:
+        return {"error": "Could not align temperature and RH"}
+    # Magnus formula
+    a, b = 17.27, 237.7
+    T = mm["reading_value_t"].astype(float)
+    RH = mm["reading_value_rh"].clip(lower=0.01, upper=100.0).astype(float)
+    gamma = (a*T/(b+T)) + np.log(RH/100.0)
+    dp = (b*gamma) / (a - gamma)
+    dp_latest = float(dp.iloc[-1])
+    risk = "Condensation risk" if dp_latest > 20.0 else "Low risk"  # heuristic
+    return {"dewpoint_latest": round(dp_latest,2), "dewpoint_mean": round(float(dp.mean()),2), "unit": "°C", "risk": risk}
+
+
+def analyze_air_enthalpy_grains(sensor_data, pressure_kpa=101.325):
+    """
+    Computes air enthalpy (kJ/kg dry air) and humidity ratio in grains based on dry-bulb temperature (°C) and RH (%).
+
+    Returns: { enthalpy_mean, enthalpy_latest, grains_mean, grains_latest, notes }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+    t_pred = _key_matcher(["temperature", "temp"], exclude_substrs=["attempt"])  # avoid 'attempt'
+    rh_pred = _key_matcher(["humidity", "relative_humidity", "rh"])
+    t_keys = _select_keys(flat, t_pred, fallback_to_all=False)
+    rh_keys = _select_keys(flat, rh_pred, fallback_to_all=False)
+    if not t_keys or not rh_keys:
+        return {"error": "Need temperature and RH series"}
+    T = _df_from_readings(sum((flat[k] for k in t_keys), []))
+    RH = _df_from_readings(sum((flat[k] for k in rh_keys), []))
+    if T.empty or RH.empty:
+        return {"error": "Insufficient readings"}
+    mm = pd.merge_asof(T.sort_values("timestamp"), RH.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_t","_rh"))
+    mm = mm.dropna(subset=["reading_value_t","reading_value_rh"]) 
+    if mm.empty:
+        return {"error": "Could not align temperature and RH"}
+    # Saturation vapor pressure (kPa) via Magnus and humidity ratio W (kg/kg dry air)
+    a, b = 17.27, 237.7
+    Td = mm["reading_value_t"].astype(float)
+    RHv = mm["reading_value_rh"].clip(lower=0.01, upper=100.0).astype(float)
+    Ps = 0.6108 * np.exp((a*Td)/(Td + b))  # approximate in kPa
+    Pw = (RHv/100.0) * Ps
+    P = float(pressure_kpa)
+    W = 0.62198 * Pw / max(1e-6, (P - Pw))  # kg/kg dry air
+    # Enthalpy (kJ/kg dry air) approx: h = 1.006*T + W*(2501 + 1.86*T)
+    h = 1.006*Td + W*(2501.0 + 1.86*Td)
+    grains = W * 7000.0  # grains of moisture per lb dry air (approx scale)
+    return {
+        "enthalpy_mean": round(float(np.mean(h)), 2),
+        "enthalpy_latest": round(float(h.iloc[-1]), 2),
+        "enthalpy_unit": "kJ/kg dry air",
+        "grains_mean": round(float(np.mean(grains)), 1),
+        "grains_latest": round(float(grains.iloc[-1]), 1),
+        "grains_unit": "grains/lb (approx)",
+        "notes": "Approximations assume standard pressure; use psychrometrics lib for precision.",
+    }
+
+
+def analyze_zone_iaq_compliance(sensor_data, co2_max=None, rh_range=None):
+    """
+    Computes CO2 and RH compliance per zone: % time within limits.
+
+    Returns: { zone_key -> { co2_compliance_pct, rh_compliance_pct, latest_co2, latest_rh } }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+    co2_pred = _key_matcher(["co2"]) ; rh_pred = _key_matcher(["humidity", "relative_humidity", "rh"])
+    co2_keys = _select_keys(flat, co2_pred, fallback_to_all=False)
+    rh_keys = _select_keys(flat, rh_pred, fallback_to_all=False)
+    if not co2_keys and not rh_keys:
+        return {"error": "No CO2 or RH series found"}
+    if co2_max is None:
+        co2_max = UK_INDOOR_STANDARDS["co2_ppm"].get("range", (0, 1000))[1]
+    if rh_range is None:
+        rh_range = UK_INDOOR_STANDARDS["humidity_rh"]["range"]
+    out = {}
+    if co2_keys:
+        dfc = _df_from_readings(sum((flat[k] for k in co2_keys), []))
+    else:
+        dfc = pd.DataFrame()
+    if rh_keys:
+        dfr = _df_from_readings(sum((flat[k] for k in rh_keys), []))
+    else:
+        dfr = pd.DataFrame()
+    # compute compliance over combined series (site-level proxy)
+    if not dfc.empty:
+        co2_ok = (dfc["reading_value"] <= float(co2_max)).mean() * 100.0
+        latest_co2 = float(dfc.iloc[-1]["reading_value"])
+    else:
+        co2_ok = None; latest_co2 = None
+    if not dfr.empty:
+        lo, hi = rh_range
+        rh_ok = dfr["reading_value"].between(lo, hi, inclusive="both").mean() * 100.0
+        latest_rh = float(dfr.iloc[-1]["reading_value"])
+    else:
+        rh_ok = None; latest_rh = None
+    out["site"] = {
+        "co2_compliance_pct": (round(float(co2_ok),2) if co2_ok is not None else None),
+        "rh_compliance_pct": (round(float(rh_ok),2) if rh_ok is not None else None),
+        "latest_co2": latest_co2,
+        "latest_rh": latest_rh,
+    }
+    return out
+
+
+def analyze_iaq_contrast_outdoor_indoor(sensor_data, threshold_ppm=100):
+    """
+    Compares Outside_Air_CO2 vs Return_Air_CO2; flags economizer feasibility when OA << Return.
+
+    Returns: { differential_latest, opportunity: bool, hours_opportunity (approx by points) }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+    oa_pred = _key_matcher(["outside_air", "outdoor" ])
+    ret_pred = _key_matcher(["return_air", "return" ])
+    co2_pred = _key_matcher(["co2"])  
+    oa_keys = [k for k in flat.keys() if oa_pred(str(k)) and co2_pred(str(k))]
+    ra_keys = [k for k in flat.keys() if ret_pred(str(k)) and co2_pred(str(k))]
+    if not oa_keys or not ra_keys:
+        return {"error": "Need outside and return CO2 series"}
+    df_oa = _df_from_readings(sum((flat[k] for k in oa_keys), []))
+    df_ra = _df_from_readings(sum((flat[k] for k in ra_keys), []))
+    if df_oa.empty or df_ra.empty:
+        return {"error": "Insufficient readings"}
+    mm = pd.merge_asof(df_oa.sort_values("timestamp"), df_ra.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_oa","_ra"))
+    mm = mm.dropna(subset=["reading_value_oa","reading_value_ra"]) 
+    if mm.empty:
+        return {"error": "Could not align OA and RA"}
+    diff = (mm["reading_value_ra"] - mm["reading_value_oa"])  # positive means OA cleaner
+    latest = float(diff.iloc[-1])
+    opp = bool((diff > float(threshold_ppm)).sum() > 0)
+    return {"differential_latest": round(latest,1), "opportunity": opp, "approx_opportunity_count": int((diff > float(threshold_ppm)).sum())}
+
+
+def analyze_zone_temperature_summary(sensor_data, comfort_range=None):
+    """
+    Summarizes zone temperature: mean/min/max/latest and time-in-comfort band.
+    Returns: { mean, min, max, latest, time_in_comfort_pct }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No temperature data available"}
+    temp_pred = _key_matcher(["zone_air_temperature", "zone temperature", "zone_air", "temperature", "temp"], exclude_substrs=["attempt"])
+    keys = _select_keys(flat, temp_pred, fallback_to_all=(len(flat)==1))
+    if not keys:
+        return {"error": "No zone temperature-like keys found"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    if df.empty:
+        return {"error": "Empty temperature series"}
+    if comfort_range is None:
+        comfort_range = UK_INDOOR_STANDARDS["temperature_c"]["range"]
+    lo, hi = comfort_range
+    mask = df["reading_value"].between(lo, hi, inclusive="both")
+    return {
+        "mean": round(float(df["reading_value"].mean()),2),
+        "min": round(float(df["reading_value"].min()),2),
+        "max": round(float(df["reading_value"].max()),2),
+        "latest": round(float(df.iloc[-1]["reading_value"]),2),
+        "unit": "°C",
+        "time_in_comfort_pct": round(float(mask.mean()*100.0),2),
+        "acceptable_range": {"min": lo, "max": hi, "unit": "°C"},
+    }
+
+
+def analyze_simple_comfort_index(sensor_data, t_target=22.0, rh_target=50.0):
+    """
+    Computes a simple comfort score (0–100) as a function of deviation from targets (22°C, 50% RH).
+    Returns: { score_latest, score_mean, notes }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+    t_pred = _key_matcher(["temperature", "temp"], exclude_substrs=["attempt"]) ; rh_pred = _key_matcher(["humidity","rh","relative_humidity"])
+    T = _df_from_readings(sum((flat[k] for k in _select_keys(flat, t_pred, False)), []))
+    RH = _df_from_readings(sum((flat[k] for k in _select_keys(flat, rh_pred, False)), []))
+    if T.empty or RH.empty:
+        return {"error": "Need temperature and RH series"}
+    mm = pd.merge_asof(T.sort_values("timestamp"), RH.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_t","_rh"))
+    mm = mm.dropna(subset=["reading_value_t","reading_value_rh"]) 
+    if mm.empty:
+        return {"error": "Could not align temperature and RH"}
+    # score: penalize absolute deviations with weights; clamp to [0,100]
+    dt = (mm["reading_value_t"] - float(t_target)).abs()
+    drh = (mm["reading_value_rh"] - float(rh_target)).abs()
+    raw = 100.0 - (dt*3.0 + drh*0.5)  # weight temperature more than RH
+    score = raw.clip(lower=0.0, upper=100.0)
+    return {"score_latest": round(float(score.iloc[-1]),1), "score_mean": round(float(score.mean()),1), "notes": "Heuristic comfort score; PMV/PPD preferred when available."}
+
+
+def analyze_pmv_ppd_approximation(sensor_data, clo=0.5, met=1.1, air_speed=0.1, tr=None):
+    """
+    Approximates PMV/PPD using simplified inputs: air temperature (T), relative humidity (RH), air speed (m/s), clothing (clo), metabolism (met), and mean radiant temperature (tr ~ T if None).
+    Returns: { pmv_latest, ppd_latest, assumptions }
+    """
+    flat = _aggregate_flat(sensor_data)
+    t_pred = _key_matcher(["temperature", "temp"], exclude_substrs=["attempt"]) ; rh_pred = _key_matcher(["humidity","rh","relative_humidity"])
+    T = _df_from_readings(sum((flat.get(k, []) for k in _select_keys(flat, t_pred, False)), []))
+    RH = _df_from_readings(sum((flat.get(k, []) for k in _select_keys(flat, rh_pred, False)), []))
+    if T.empty or RH.empty:
+        return {"error": "Need temperature and RH series"}
+    if tr is None:
+        tr = float(T["reading_value"].iloc[-1]) if not T.empty else None
+    # A lightweight PMV proxy (not ISO-7730 exact):
+    Ta = T["reading_value"].astype(float)
+    RHv = RH["reading_value"].astype(float)
+    # thermal sensation proxy scaled roughly between -3 and +3
+    pmv_proxy = 0.303*np.exp(-0.036*met) + 0.028
+    # discomfort rises with deviations from ~22C and RH extremes
+    base = (Ta - 22.0)/8.0 - (RHv - 50.0)/100.0 - (air_speed-0.1)
+    pmv = float((pmv_proxy*base).clip(-3,3).iloc[-1])
+    ppd = float((100.0 - 95.0*np.exp(-0.03353*pmv**4 - 0.2179*pmv**2)))
+    return {"pmv_latest": round(pmv,2), "ppd_latest": round(ppd,1), "assumptions": {"clo": clo, "met": met, "air_speed": air_speed, "tr": tr}}
+
+
+def analyze_temperature_setpoint_tracking(sensor_data, setpoint_keys=None):
+    """
+    Compares actual temperature vs setpoint; computes MAE, overshoot/undershoot and % within ±0.5°C.
+    Returns: { mae, overshoot_count, undershoot_count, within_band_pct }
+    """
+    flat = _aggregate_flat(sensor_data)
+    temp_pred = _key_matcher(["temperature", "temp"], exclude_substrs=["attempt"]) ; sp_pred = _key_matcher(["setpoint", "sp"])
+    t_keys = _select_keys(flat, temp_pred, False)
+    if setpoint_keys is None:
+        sp_keys = _select_keys(flat, sp_pred, False)
+    else:
+        sp_keys = [k for k in flat.keys() if any(s.lower() in str(k).lower() for s in setpoint_keys)]
+    if not t_keys or not sp_keys:
+        return {"error": "Need temperature and setpoint series"}
+    t_df = _df_from_readings(sum((flat[k] for k in t_keys), []))
+    sp_df = _df_from_readings(sum((flat[k] for k in sp_keys), []))
+    if t_df.empty or sp_df.empty:
+        return {"error": "Insufficient readings"}
+    mm = pd.merge_asof(t_df.sort_values("timestamp"), sp_df.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_act","_sp"))
+    mm = mm.dropna(subset=["reading_value_act","reading_value_sp"]) 
+    if mm.empty:
+        return {"error": "Could not align temperature and setpoint"}
+    err = (mm["reading_value_act"] - mm["reading_value_sp"]).astype(float)
+    within = (err.abs() <= 0.5).mean() * 100.0
+    return {"mae": round(float(err.abs().mean()),2), "overshoot_count": int((err>0.5).sum()), "undershoot_count": int((err<-0.5).sum()), "within_band_pct": round(float(within),2)}
+
+
+def analyze_setpoint_deviation(sensor_data, tolerance=1.0):
+    """
+    Computes persistent deviation: % time beyond tolerance between actual and setpoint.
+    Returns: { percent_beyond_tolerance, avg_deviation }
+    """
+    flat = _aggregate_flat(sensor_data)
+    temp_pred = _key_matcher(["temperature", "temp"], exclude_substrs=["attempt"]) ; sp_pred = _key_matcher(["setpoint", "sp"])
+    t_df = _df_from_readings(sum((flat.get(k, []) for k in _select_keys(flat, temp_pred, False)), []))
+    sp_df = _df_from_readings(sum((flat.get(k, []) for k in _select_keys(flat, sp_pred, False)), []))
+    if t_df.empty or sp_df.empty:
+        return {"error": "Need temperature and setpoint series"}
+    mm = pd.merge_asof(t_df.sort_values("timestamp"), sp_df.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_act","_sp"))
+    mm = mm.dropna(subset=["reading_value_act","reading_value_sp"]) 
+    if mm.empty:
+        return {"error": "Could not align temperature and setpoint"}
+    dev = (mm["reading_value_act"] - mm["reading_value_sp"]).abs()
+    pct = (dev > float(tolerance)).mean() * 100.0
+    return {"percent_beyond_tolerance": round(float(pct),2), "avg_deviation": round(float(dev.mean()),2), "tolerance": float(tolerance)}
+
+
+def analyze_mixed_air_validation(sensor_data):
+    """
+    Validates mixed-air temperature plausibility: Outside_Air_Temperature <= Mixed_Air_Temperature <= Return_Air_Temperature (cooling).
+    Returns: { violations_count, residual_mean }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No temperature data available"}
+    o_pred = _key_matcher(["outside_air", "outdoor"]) ; r_pred = _key_matcher(["return_air", "return"]) ; m_pred = _key_matcher(["mixed_air", "mix"])
+    t_pred = _key_matcher(["temperature", "temp"])  
+    O_keys = [k for k in flat.keys() if o_pred(str(k)) and t_pred(str(k))]
+    R_keys = [k for k in flat.keys() if r_pred(str(k)) and t_pred(str(k))]
+    M_keys = [k for k in flat.keys() if m_pred(str(k)) and t_pred(str(k))]
+    if not O_keys or not R_keys or not M_keys:
+        return {"error": "Need outside, return, and mixed air temperature series"}
+    dfO = _df_from_readings(sum((flat[k] for k in O_keys), []))
+    dfR = _df_from_readings(sum((flat[k] for k in R_keys), []))
+    dfM = _df_from_readings(sum((flat[k] for k in M_keys), []))
+    mm = pd.merge_asof(dfM.sort_values("timestamp"), dfO.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_m","_o"))
+    mm = pd.merge_asof(mm.sort_values("timestamp"), dfR.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"))
+    mm = mm.dropna(subset=["reading_value_m","reading_value_o","reading_value"]) 
+    if mm.empty:
+        return {"error": "Could not align series"}
+    violations = ((mm["reading_value_m"] < mm["reading_value_o"]) | (mm["reading_value_m"] > mm["reading_value"]))
+    # residual vs midpoint of OAT and RAT
+    residual = mm["reading_value_m"] - 0.5*(mm["reading_value_o"] + mm["reading_value"]) 
+    return {"violations_count": int(violations.sum()), "residual_mean": round(float(residual.mean()),2)}
+
+
+def analyze_economizer_opportunity(sensor_data, method="drybulb", delta=1.0):
+    """
+    Detects free cooling opportunities: OAT significantly lower than RAT (drybulb) or lower enthalpy (enthalpy method).
+    Returns: { opportunity_count, latest_flag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No sensor data available"}
+    o_pred = _key_matcher(["outside_air", "outdoor"]) ; r_pred = _key_matcher(["return_air", "return"]) ; t_pred = _key_matcher(["temperature", "temp"])
+    O_keys = [k for k in flat.keys() if o_pred(str(k)) and t_pred(str(k))]
+    R_keys = [k for k in flat.keys() if r_pred(str(k)) and t_pred(str(k))]
+    if not O_keys or not R_keys:
+        return {"error": "Need outside and return temperature series"}
+    dfO = _df_from_readings(sum((flat[k] for k in O_keys), []))
+    dfR = _df_from_readings(sum((flat[k] for k in R_keys), []))
+    mm = pd.merge_asof(dfO.sort_values("timestamp"), dfR.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_oa","_ra"))
+    if mm.empty:
+        return {"error": "Could not align OAT and RAT"}
+    if method == "drybulb":
+        flag = (mm["reading_value_oa"] + float(delta) < mm["reading_value_ra"])  # OA cooler by margin
+    else:
+        # fallback: treat drybulb as proxy if enthalpy not available in this function
+        flag = (mm["reading_value_oa"] + float(delta) < mm["reading_value_ra"]) 
+    return {"opportunity_count": int(flag.sum()), "latest_flag": bool(flag.iloc[-1])}
+
+
+def analyze_supply_air_temp_control(sensor_data):
+    """
+    SAT control quality: variance and simple stability metric (oscillation proxy).
+    Returns: { variance, stability_flag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    t_pred = _key_matcher(["supply_air", "sat"]) ; temp_pred = _key_matcher(["temperature", "temp"]) 
+    keys = [k for k in flat.keys() if t_pred(str(k)) and temp_pred(str(k))]
+    if not keys:
+        return {"error": "No supply air temperature series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    if df.empty:
+        return {"error": "Empty SAT series"}
+    var = float(df["reading_value"].var() or 0.0)
+    # very crude oscillation proxy: count zero-crossings of first difference
+    d = df["reading_value"].diff().fillna(0)
+    zero_cross = int(((d.shift(1) * d) < 0).sum())
+    stability = "unstable" if zero_cross > max(5, len(df)//50) else "stable"
+    return {"variance": round(var,3), "stability_flag": stability}
+
+
+def analyze_supply_static_pressure_control(sensor_data, target=None):
+    """
+    Static pressure control: track target (if provided or inferred) and report MAE and oscillation.
+    Returns: { mae, oscillation_index }
+    """
+    flat = _aggregate_flat(sensor_data)
+    p_pred = _key_matcher(["static_pressure", "pressure"]) ; sp_pred = _key_matcher(["setpoint", "sp"]) 
+    p_keys = _select_keys(flat, p_pred, False)
+    if not p_keys:
+        return {"error": "No static pressure series"}
+    p_df = _df_from_readings(sum((flat[k] for k in p_keys), []))
+    if p_df.empty:
+        return {"error": "Empty pressure series"}
+    if target is None:
+        # infer rough target as median
+        target = float(p_df["reading_value"].median())
+    err = (p_df["reading_value"].astype(float) - float(target)).abs()
+    d = p_df["reading_value"].diff().fillna(0)
+    osc = float((np.sign(d).diff().abs().fillna(0).sum())) / max(1, len(p_df))
+    return {"mae": round(float(err.mean()),3), "oscillation_index": round(osc,3), "target": float(target)}
+
+
+def analyze_airflow_profiling(sensor_data):
+    """
+    Profiles supply/return/mixed airflow and infers balance/leakage heuristically.
+
+    Returns: { supply_avg, return_avg, mixed_avg, balance_ratio, leakage_hint }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No airflow data available"}
+    sup_pred = _key_matcher(["supply_air", "supply"]) ; ret_pred = _key_matcher(["return_air", "return"]) ; mix_pred = _key_matcher(["mixed_air", "mix"]) ; flow_pred = _key_matcher(["air_flow", "airflow", "flow_rate"])
+    s_keys = [k for k in flat.keys() if sup_pred(str(k)) and flow_pred(str(k))]
+    r_keys = [k for k in flat.keys() if ret_pred(str(k)) and flow_pred(str(k))]
+    m_keys = [k for k in flat.keys() if mix_pred(str(k)) and flow_pred(str(k))]
+    def avg_for(keys):
+        if not keys:
+            return None
+        df = _df_from_readings(sum((flat[k] for k in keys), []))
+        return (float(df["reading_value"].mean()) if not df.empty else None)
+    s_avg = avg_for(s_keys)
+    r_avg = avg_for(r_keys)
+    m_avg = avg_for(m_keys)
+    balance = (s_avg / r_avg) if (s_avg is not None and r_avg not in (None, 0)) else None
+    leakage = None
+    if s_avg is not None and r_avg is not None:
+        if s_avg > r_avg * 1.1:
+            leakage = "Possible return leakage or supply imbalance"
+        elif r_avg > s_avg * 1.1:
+            leakage = "Possible supply leakage or return imbalance"
+        else:
+            leakage = "Balanced"
+    return {"supply_avg": s_avg, "return_avg": r_avg, "mixed_avg": m_avg, "balance_ratio": (round(float(balance),3) if balance is not None else None), "leakage_hint": leakage}
+
+
+def analyze_filter_health(sensor_data, delta_p_threshold=None):
+    """
+    Assesses filter health using Filter_Differential_Pressure and (optionally) airflow to normalize.
+
+    Returns: { dp_latest, dp_mean, normalized_dp (if flow found), alert }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No data available"}
+    dp_pred = _key_matcher(["filter", "differential_pressure", "delta_p", "dp"]) ; flow_pred = _key_matcher(["air_flow", "airflow", "flow_rate"])
+    dp_keys = _select_keys(flat, dp_pred, False)
+    if not dp_keys:
+        return {"error": "No filter ΔP series"}
+    dp_df = _df_from_readings(sum((flat[k] for k in dp_keys), []))
+    if dp_df.empty:
+        return {"error": "Empty filter ΔP series"}
+    flow_keys = _select_keys(flat, flow_pred, False)
+    if flow_keys:
+        f_df = _df_from_readings(sum((flat[k] for k in flow_keys), []))
+    else:
+        f_df = pd.DataFrame()
+    dp_latest = float(dp_df.iloc[-1]["reading_value"]) if not dp_df.empty else None
+    dp_mean = float(dp_df["reading_value"].mean())
+    normalized = None
+    if not f_df.empty:
+        mm = pd.merge_asof(dp_df.sort_values("timestamp"), f_df.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_dp","_flow"))
+        if not mm.empty and (mm["reading_value_flow"] > 0).any():
+            normalized = float((mm["reading_value_dp"] / mm["reading_value_flow"]).median())
+    if delta_p_threshold is None:
+        delta_p_threshold = dp_mean * 1.5  # heuristic: 50% above mean suggests change
+    alert = None
+    if dp_latest is not None:
+        alert = ("Change filter soon" if dp_latest > float(delta_p_threshold) else "Filter OK")
+    return {"dp_latest": dp_latest, "dp_mean": round(dp_mean,2), "normalized_dp": (round(normalized,4) if normalized is not None else None), "unit": "Pa", "alert": alert}
+
+
+def analyze_damper_performance(sensor_data, flatline_points=10):
+    """
+    Evaluates damper position motion/response; flags stuck or sluggish behavior.
+
+    Returns: { variance, flatline_count, stuck_flag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    pos_pred = _key_matcher(["damper", "position"]) ; key_pred = _key_matcher(["damper_position", "damper"])
+    keys = _select_keys(flat, key_pred, False) or _select_keys(flat, pos_pred, False)
+    if not keys:
+        return {"error": "No damper position series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    if df.empty:
+        return {"error": "Empty damper series"}
+    variance = float(df["reading_value"].var() or 0.0)
+    # flatline detection
+    vals = df["reading_value"].tolist(); ts = df["timestamp"].tolist();
+    flatlines = 0
+    run = 1
+    for i in range(1, len(vals)):
+        if vals[i] == vals[i-1]:
+            run += 1
+        else:
+            if run >= int(flatline_points):
+                flatlines += 1
+            run = 1
+    if run >= int(flatline_points):
+        flatlines += 1
+    stuck = (flatlines >= 1) or (variance < 1.0)
+    return {"variance": round(variance,3), "flatline_count": flatlines, "stuck_flag": bool(stuck)}
+
+
+def analyze_coil_delta_t_effectiveness(sensor_data):
+    """
+    Computes coil ΔT and a simple effectiveness proxy using available inlet/outlet air temps.
+
+    Returns: { delta_t_mean, delta_t_latest, effectiveness_proxy }
+    """
+    flat = _aggregate_flat(sensor_data)
+    sup_pred = _key_matcher(["supply_air"]) ; ret_pred = _key_matcher(["return_air"]) ; temp_pred = _key_matcher(["temperature", "temp"])
+    s_keys = [k for k in flat.keys() if sup_pred(str(k)) and temp_pred(str(k))]
+    r_keys = [k for k in flat.keys() if ret_pred(str(k)) and temp_pred(str(k))]
+    if not s_keys or not r_keys:
+        return {"error": "Need supply and return air temperatures"}
+    dfS = _df_from_readings(sum((flat[k] for k in s_keys), []))
+    dfR = _df_from_readings(sum((flat[k] for k in r_keys), []))
+    mm = pd.merge_asof(dfS.sort_values("timestamp"), dfR.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_s","_r"))
+    if mm.empty:
+        return {"error": "Could not align supply and return"}
+    dT = (mm["reading_value_r"] - mm["reading_value_s"]).abs()
+    eff = float(dT.mean()) / max(1.0, float(mm["reading_value_r"].std() or 1.0))  # heuristic proxy
+    return {"delta_t_mean": round(float(dT.mean()),2), "delta_t_latest": round(float(dT.iloc[-1]),2), "effectiveness_proxy": round(eff,3), "unit": "°C"}
+
+
+def analyze_frost_freeze_risk(sensor_data, oat_threshold=0.0):
+    """
+    Flags frost/freezing risk using frost sensor if present or outdoor air temperature below a threshold.
+
+    Returns: { risk_events, latest_flag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    frost_pred = _key_matcher(["frost"]) ; oat_pred = _key_matcher(["outside_air", "outdoor"]) ; temp_pred = _key_matcher(["temperature", "temp"])
+    frost_keys = _select_keys(flat, frost_pred, False)
+    if frost_keys:
+        df = _df_from_readings(sum((flat[k] for k in frost_keys), []))
+        if df.empty:
+            return {"error": "Empty frost sensor series"}
+        flag = (df["reading_value"] > 0.5)  # binary-ish
+        return {"risk_events": int(flag.sum()), "latest_flag": bool(flag.iloc[-1])}
+    oat_keys = [k for k in flat.keys() if oat_pred(str(k)) and temp_pred(str(k))]
+    if not oat_keys:
+        return {"error": "No frost or OAT series"}
+    odf = _df_from_readings(sum((flat[k] for k in oat_keys), []))
+    flag = (odf["reading_value"] <= float(oat_threshold))
+    return {"risk_events": int(flag.sum()), "latest_flag": bool(flag.iloc[-1])}
+
+
+def analyze_return_mixed_outdoor_consistency(sensor_data):
+    """
+    Checks typical ordering RAT >= MAT >= OAT (cooling scenario) violations.
+
+    Returns: { violation_count }
+    """
+    flat = _aggregate_flat(sensor_data)
+    r_pred = _key_matcher(["return_air", "return"]) ; m_pred = _key_matcher(["mixed_air", "mix"]) ; o_pred = _key_matcher(["outside_air", "outdoor"]) ; t_pred = _key_matcher(["temperature", "temp"])
+    Rk = [k for k in flat.keys() if r_pred(str(k)) and t_pred(str(k))]
+    Mk = [k for k in flat.keys() if m_pred(str(k)) and t_pred(str(k))]
+    Ok = [k for k in flat.keys() if o_pred(str(k)) and t_pred(str(k))]
+    if not (Rk and Mk and Ok):
+        return {"error": "Need RAT, MAT, and OAT series"}
+    dfR = _df_from_readings(sum((flat[k] for k in Rk), []))
+    dfM = _df_from_readings(sum((flat[k] for k in Mk), []))
+    dfO = _df_from_readings(sum((flat[k] for k in Ok), []))
+    mm = pd.merge_asof(dfR.sort_values("timestamp"), dfM.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_r","_m"))
+    mm = pd.merge_asof(mm.sort_values("timestamp"), dfO.sort_values("timestamp"), on="timestamp", direction="nearest")
+    if mm.empty:
+        return {"error": "Could not align series"}
+    violations = ~((mm["reading_value_r"] >= mm["reading_value_m"]) & (mm["reading_value_m"] >= mm["reading_value"]))
+    return {"violation_count": int(violations.sum())}
+
+
+def analyze_chilled_water_delta_t(sensor_data):
+    """
+    Computes CHW ΔT = Return - Supply for chilled water loop; flags low-ΔT.
+
+    Returns: { delta_t_mean, delta_t_latest, low_delta_t_flag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    cs_pred = _key_matcher(["chilled_water", "chw"]) ; sup_pred = _key_matcher(["supply"]) ; ret_pred = _key_matcher(["return"]) ; t_pred = _key_matcher(["temperature", "temp"])
+    ChwS = [k for k in flat.keys() if cs_pred(str(k)) and sup_pred(str(k)) and t_pred(str(k))]
+    ChwR = [k for k in flat.keys() if cs_pred(str(k)) and ret_pred(str(k)) and t_pred(str(k))]
+    if not (ChwS and ChwR):
+        return {"error": "Need CHW supply and return temperatures"}
+    dfS = _df_from_readings(sum((flat[k] for k in ChwS), []))
+    dfR = _df_from_readings(sum((flat[k] for k in ChwR), []))
+    mm = pd.merge_asof(dfR.sort_values("timestamp"), dfS.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_r","_s"))
+    if mm.empty:
+        return {"error": "Could not align CHWR and CHWS"}
+    dT = mm["reading_value_r"] - mm["reading_value_s"]
+    low_flag = bool((dT < 3.0).mean() > 0.5)  # heuristic: more than half points below 3C
+    return {"delta_t_mean": round(float(dT.mean()),2), "delta_t_latest": round(float(dT.iloc[-1]),2), "low_delta_t_flag": low_flag, "unit": "°C"}
+
+
+def analyze_chilled_water_flow_health(sensor_data):
+    """
+    Reviews CHW flow adequacy; reports min/avg/max and low flow warnings.
+
+    Returns: { min_flow, avg_flow, max_flow, low_flow_flag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    cw_pred = _key_matcher(["chilled_water", "chw"]) ; flow_pred = _key_matcher(["flow", "flow_rate"]) 
+    keys = [k for k in flat.keys() if cw_pred(str(k)) and flow_pred(str(k))]
+    if not keys:
+        return {"error": "No CHW flow series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    if df.empty:
+        return {"error": "Empty CHW flow series"}
+    mn = float(df["reading_value"].min()); av = float(df["reading_value"].mean()); mx = float(df["reading_value"].max())
+    low_flag = bool(mn <= 0)
+    return {"min_flow": round(mn,2), "avg_flow": round(av,2), "max_flow": round(mx,2), "low_flow_flag": low_flag}
+
+
+def analyze_loop_differential_pressure(sensor_data, loop="chw", target=None):
+    """
+    Assesses loop DP (CHW/HW) sufficiency vs target if provided; reports mean and tracking error.
+
+    Returns: { dp_mean, mae_to_target }
+    """
+    flat = _aggregate_flat(sensor_data)
+    loop_pred = _key_matcher([loop, "differential_pressure", "dp"]) ; dp_pred = _key_matcher(["differential_pressure", "dp"]) 
+    keys = _select_keys(flat, loop_pred, False) or _select_keys(flat, dp_pred, False)
+    if not keys:
+        return {"error": "No differential pressure series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    if df.empty:
+        return {"error": "Empty DP series"}
+    dp_mean = float(df["reading_value"].mean())
+    if target is None:
+        return {"dp_mean": round(dp_mean,2), "mae_to_target": None}
+    err = (df["reading_value"].astype(float) - float(target)).abs()
+    return {"dp_mean": round(dp_mean,2), "mae_to_target": round(float(err.mean()),2), "target": float(target)}
+
+
+def analyze_coil_valve_diagnostics(sensor_data):
+    """
+    Heuristic coil valve diagnostics using valve position with temps/flow to infer leakage/stiction.
+
+    Returns: { leakage_suspicion, stiction_suspicion, notes }
+    """
+    flat = _aggregate_flat(sensor_data)
+    v_pred = _key_matcher(["valve", "position"]) ; t_pred = _key_matcher(["temperature", "temp"]) ; f_pred = _key_matcher(["flow", "flow_rate"]) 
+    v_keys = _select_keys(flat, v_pred, False)
+    if not v_keys:
+        return {"error": "No valve position series"}
+    vdf = _df_from_readings(sum((flat[k] for k in v_keys), []))
+    tdf = _df_from_readings(sum((flat[k] for k in _select_keys(flat, t_pred, False)), [])) if _select_keys(flat, t_pred, False) else pd.DataFrame()
+    fdf = _df_from_readings(sum((flat[k] for k in _select_keys(flat, f_pred, False)), [])) if _select_keys(flat, f_pred, False) else pd.DataFrame()
+    leakage = False; stiction = False; notes = []
+    if not vdf.empty:
+        # stiction via flatline episodes in valve position
+        vals = vdf["reading_value"].tolist()
+        run = 1; flats = 0
+        for i in range(1, len(vals)):
+            if vals[i] == vals[i-1]:
+                run += 1
+            else:
+                if run >= 10: flats += 1
+                run = 1
+        if run >= 10: flats += 1
+        stiction = flats >= 2
+    if not (vdf.empty or tdf.empty):
+        mm = pd.merge_asof(vdf.sort_values("timestamp"), tdf.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_v","_t"))
+        if not mm.empty:
+            # leakage: low valve position but temperature change persists
+            low_pos = mm["reading_value_v"] < 5.0
+            temp_dev = mm["reading_value_t"].diff().abs().fillna(0)
+            if (low_pos & (temp_dev > 0.5)).mean() > 0.1:
+                leakage = True; notes.append("Temp swings with nearly closed valve")
+    if not (vdf.empty or fdf.empty):
+        mm2 = pd.merge_asof(vdf.sort_values("timestamp"), fdf.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_v","_f"))
+        if not mm2.empty:
+            low_pos = mm2["reading_value_v"] < 5.0
+            if (low_pos & (mm2["reading_value_f"] > 0.0)).mean() > 0.1:
+                leakage = True; notes.append("Flow persists at near-closed position")
+    return {"leakage_suspicion": leakage, "stiction_suspicion": stiction, "notes": notes}
+
+
+def analyze_heat_exchanger_effectiveness(sensor_data):
+    """
+    Estimates heat exchanger effectiveness with inlet/outlet temperatures if both sides available.
+
+    Returns: { effectiveness, notes }
+    """
+    flat = _aggregate_flat(sensor_data)
+    hot_in_pred = _key_matcher(["hot_in", "primary_in", "hx_hot_in"]) ; hot_out_pred = _key_matcher(["hot_out", "primary_out", "hx_hot_out"]) ; cold_in_pred = _key_matcher(["cold_in", "secondary_in", "hx_cold_in"]) ; cold_out_pred = _key_matcher(["cold_out", "secondary_out", "hx_cold_out"]) ; t_pred = _key_matcher(["temperature", "temp"])
+    # Try generic pairs by suffix if exact HX naming not present
+    keys = list(flat.keys())
+    def pick(pred):
+        ks = [k for k in keys if pred(str(k)) and t_pred(str(k))]
+        return ks[0] if ks else None
+    H_in = pick(hot_in_pred); H_out = pick(hot_out_pred); C_in = pick(cold_in_pred); C_out = pick(cold_out_pred)
+    if not all([H_in, H_out, C_in, C_out]):
+        return {"error": "Need HX hot_in/hot_out and cold_in/cold_out temperature series"}
+    def last(key):
+        df = _df_from_readings(flat[key])
+        return (float(df.iloc[-1]["reading_value"]) if not df.empty else None)
+    Th_in = last(H_in); Th_out = last(H_out); Tc_in = last(C_in); Tc_out = last(C_out)
+    if None in (Th_in, Th_out, Tc_in, Tc_out):
+        return {"error": "Insufficient HX readings"}
+    # effectiveness epsilon = (Tc_out - Tc_in) / (Th_in - Tc_in), clamp [0,1]
+    denom = max(1e-6, (Th_in - Tc_in))
+    eps = max(0.0, min(1.0, (Tc_out - Tc_in) / denom))
+    return {"effectiveness": round(float(eps),3), "notes": "Approximate LMTD-free estimate."}
+
+
+def analyze_condenser_loop_health(sensor_data):
+    """
+    Reviews condenser loop temperature/flow; reports approach proxy and capacity constraints hints.
+
+    Returns: { temp_mean, flow_mean, approach_proxy }
+    """
+    flat = _aggregate_flat(sensor_data)
+    c_pred = _key_matcher(["condenser_water", "condensing", "cw"]) ; t_pred = _key_matcher(["temperature", "temp"]) ; f_pred = _key_matcher(["flow", "flow_rate"]) 
+    t_keys = [k for k in flat.keys() if c_pred(str(k)) and t_pred(str(k))]
+    f_keys = [k for k in flat.keys() if c_pred(str(k)) and f_pred(str(k))]
+    if not (t_keys or f_keys):
+        return {"error": "No condenser loop series"}
+    t_df = _df_from_readings(sum((flat[k] for k in t_keys), [])) if t_keys else pd.DataFrame()
+    f_df = _df_from_readings(sum((flat[k] for k in f_keys), [])) if f_keys else pd.DataFrame()
+    temp_mean = float(t_df["reading_value"].mean()) if not t_df.empty else None
+    flow_mean = float(f_df["reading_value"].mean()) if not f_df.empty else None
+    approach = None
+    if temp_mean is not None and flow_mean is not None:
+        approach = round(float(temp_mean / max(flow_mean, 1e-6)), 4)  # rough proxy: °C per unit flow
+    return {"temp_mean": (round(temp_mean,2) if temp_mean is not None else None), "flow_mean": (round(flow_mean,2) if flow_mean is not None else None), "approach_proxy": approach}
+
+
+def analyze_electric_power_summary(sensor_data):
+    """
+    Summarizes electric power: average kW, peak kW/time, and total kWh (integrated if energy absent).
+
+    Returns: { avg_kW, peak_kW, peak_time, total_kWh, period_start, period_end, interval }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat:
+        return {"error": "No data"}
+    p_pred = _key_matcher(["power", "kw", "active_power", "demand"]) ; e_pred = _key_matcher(["energy", "kwh"]) 
+    p_keys = _select_keys(flat, p_pred, False)
+    e_keys = _select_keys(flat, e_pred, False)
+    def build_total_power(keys):
+        series = []
+        for i, k in enumerate(keys):
+            df = _df_from_readings(flat[k])
+            if df.empty: 
+                continue
+            s = df[["timestamp","reading_value"]].copy()
+            s["timestamp"] = pd.to_datetime(s["timestamp"], errors="coerce")
+            s = s.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+            s = s.resample("15min").mean().rename(columns={"reading_value": f"kW_{i}"})
+            series.append(s)
+        if not series:
+            return pd.DataFrame()
+        total = pd.concat(series, axis=1)
+        total["kW_total"] = total.sum(axis=1, numeric_only=True)
+        return total[["kW_total"]].dropna()
+    total_kw = build_total_power(p_keys)
+    if total_kw.empty and e_keys:
+        # Try to estimate kW from energy increments
+        series = []
+        for i, k in enumerate(e_keys):
+            df = _df_from_readings(flat[k])
+            if df.empty:
+                continue
+            s = df[["timestamp","reading_value"]].copy()
+            s["timestamp"] = pd.to_datetime(s["timestamp"], errors="coerce")
+            s = s.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+            s = s.resample("15min").max()  # cumulative energy often monotonic
+            s["inc_kWh"] = s["reading_value"].diff().clip(lower=0)
+            s["kW_est"] = s["inc_kWh"] / 0.25
+            series.append(s[["kW_est"]].rename(columns={"kW_est": f"kW_{i}"}))
+        if series:
+            total = pd.concat(series, axis=1)
+            total_kw = total.sum(axis=1, numeric_only=True).to_frame("kW_total")
+    if total_kw.empty:
+        return {"error": "No power/energy series"}
+    period_start = total_kw.index.min()
+    period_end = total_kw.index.max()
+    avg_kw = float(total_kw["kW_total"].mean())
+    peak_row = total_kw["kW_total"].idxmax()
+    peak_kw = float(total_kw.loc[peak_row, "kW_total"]) if pd.notna(peak_row) else None
+    # Integrate to kWh (15 min -> 0.25 h)
+    total_kwh = float((total_kw["kW_total"].fillna(0) * 0.25).sum())
+    return {
+        "avg_kW": round(avg_kw,2),
+        "peak_kW": (round(peak_kw,2) if peak_kw is not None else None),
+        "peak_time": (peak_row.isoformat() if isinstance(peak_row, pd.Timestamp) else None),
+        "total_kWh": round(total_kwh,1),
+        "period_start": (period_start.isoformat() if isinstance(period_start, pd.Timestamp) else None),
+        "period_end": (period_end.isoformat() if isinstance(period_end, pd.Timestamp) else None),
+        "interval": "15min"
+    }
+
+
+def analyze_load_profile(sensor_data):
+    """
+    Computes normalized diurnal and weekly load profiles from total kW.
+
+    Returns: { hourly_mean_kW[24], hourly_norm[24], weekday_kWh[0..6] }
+    """
+    flat = _aggregate_flat(sensor_data)
+    p_pred = _key_matcher(["power", "kw", "active_power", "demand"]) 
+    p_keys = _select_keys(flat, p_pred, False)
+    if not p_keys:
+        return {"error": "No power series"}
+    series = []
+    for i, k in enumerate(p_keys):
+        df = _df_from_readings(flat[k])
+        if df.empty: continue
+        s = df[["timestamp","reading_value"]].copy()
+        s["timestamp"] = pd.to_datetime(s["timestamp"], errors="coerce")
+        s = s.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+        s = s.resample("15min").mean().rename(columns={"reading_value": f"kW_{i}"})
+        series.append(s)
+    if not series:
+        return {"error": "Empty power series"}
+    total = pd.concat(series, axis=1)
+    total["kW_total"] = total.sum(axis=1, numeric_only=True)
+    total = total[["kW_total"]].dropna()
+    if total.empty:
+        return {"error": "Empty total power"}
+    total["hour"] = total.index.hour
+    hourly = total.groupby("hour")["kW_total"].mean()
+    hourly_norm = (hourly / max(hourly.max(), 1e-6)).tolist()
+    # Weekday kWh
+    wk = total.copy()
+    wk["weekday"] = wk.index.dayofweek
+    wk_kwh = (wk["kW_total"] * 0.25).groupby(wk["weekday"]).sum()
+    # Ensure 0..6 ordering with fill 0.0
+    weekday_kwh = [float(wk_kwh.get(i, 0.0)) for i in range(7)]
+    return {
+        "hourly_mean_kW": [round(float(x),2) for x in hourly.tolist()],
+        "hourly_norm": [round(float(x),3) for x in hourly_norm],
+        "weekday_kWh": [round(x,1) for x in weekday_kwh]
+    }
+
+
+def analyze_demand_response_readiness(sensor_data, shed_fraction=0.15):
+    """
+    Heuristically estimates shedable kW and a readiness score from ramp-down characteristics.
+
+    Returns: { peak_kW, shedable_kW, readiness_score }
+    """
+    # Reuse load profile aggregation
+    flat = _aggregate_flat(sensor_data)
+    p_pred = _key_matcher(["power", "kw", "active_power", "demand"]) 
+    p_keys = _select_keys(flat, p_pred, False)
+    if not p_keys:
+        return {"error": "No power series"}
+    series = []
+    for i, k in enumerate(p_keys):
+        df = _df_from_readings(flat[k])
+        if df.empty: continue
+        s = df[["timestamp","reading_value"]].copy()
+        s["timestamp"] = pd.to_datetime(s["timestamp"], errors="coerce")
+        s = s.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+        s = s.resample("5min").mean().rename(columns={"reading_value": f"kW_{i}"})
+        series.append(s)
+    if not series:
+        return {"error": "Empty power series"}
+    total = pd.concat(series, axis=1)
+    total["kW_total"] = total.sum(axis=1, numeric_only=True)
+    y = total["kW_total"].dropna()
+    if y.empty:
+        return {"error": "Empty total power"}
+    peak = float(y.max())
+    shedable = round(peak * float(shed_fraction), 2)
+    # Ramp-down: fraction of intervals with >=5% drop in 10 minutes (2 steps at 5min)
+    dy2 = y.diff(2) / y.shift(2)
+    readiness = float((dy2 <= -0.05).mean()) if len(dy2) > 2 else 0.0
+    return {"peak_kW": round(peak,2), "shedable_kW": shedable, "readiness_score": round(readiness,3)}
+
+
+def analyze_part_load_ratio(sensor_data, equipment_hint=None):
+    """
+    Computes PLR as kW / kW_max (or from command/speed if power absent).
+
+    Returns: { mean_plr, low_load_pct }
+    """
+    flat = _aggregate_flat(sensor_data)
+    # Prefer equipment-specific power if hint provided
+    pred_list = ["power", "kw", "active_power"]
+    if equipment_hint:
+        pred_list.insert(0, equipment_hint)
+    p_pred = _key_matcher(pred_list)
+    p_keys = _select_keys(flat, p_pred, False)
+    dfp = None
+    if p_keys:
+        series = []
+        for i, k in enumerate(p_keys):
+            df = _df_from_readings(flat[k])
+            if df.empty: continue
+            s = df[["timestamp","reading_value"]].copy()
+            s["timestamp"] = pd.to_datetime(s["timestamp"], errors="coerce")
+            s = s.dropna(subset=["timestamp"]).set_index("timestamp").sort_index().resample("5min").mean().rename(columns={"reading_value": f"kW_{i}"})
+            series.append(s)
+        if series:
+            dfp = pd.concat(series, axis=1).sum(axis=1, numeric_only=True).to_frame("kW")
+    if dfp is not None and not dfp.empty:
+        mx = float(dfp["kW"].quantile(0.98)) or 1.0
+        plr = (dfp["kW"] / max(mx, 1e-6)).clip(lower=0, upper=1)
+    else:
+        # Fallback: command/speed/valve as proxy
+        c_pred = _key_matcher(["speed", "command", "stage", "load", "valve_position"]) 
+        c_keys = _select_keys(flat, c_pred, False)
+        if not c_keys:
+            return {"error": "No power or command proxies"}
+        dfc = _df_from_readings(sum((flat[k] for k in c_keys), []))
+        if dfc.empty:
+            return {"error": "Empty proxy series"}
+        v = dfc["reading_value"].astype(float)
+        v_norm = (v - v.min()) / max(v.max() - v.min(), 1e-6)
+        plr = v_norm
+    low_pct = float((plr < 0.3).mean()) if len(plr) else 0.0
+    return {"mean_plr": round(float(plr.mean()),3), "low_load_pct": round(low_pct,3)}
+
+
+def analyze_cooling_cop(sensor_data):
+    """
+    Approximates cooling COP proxy = (flow * ΔT * c) / kW using CHW temps/flow and chiller kW.
+    Units may be inconsistent; treat as dimensionless proxy for trends.
+
+    Returns: { cop_proxy_mean, cop_proxy_latest, notes }
+    """
+    flat = _aggregate_flat(sensor_data)
+    # CHW flow and temps
+    chw_pred = _key_matcher(["chilled_water", "chw"]) ; f_pred = _key_matcher(["flow", "flow_rate"]) ; t_pred = _key_matcher(["temperature", "temp"]) 
+    cs = [k for k in flat.keys() if chw_pred(str(k)) and _key_matcher(["supply"])(str(k)) and t_pred(str(k))]
+    cr = [k for k in flat.keys() if chw_pred(str(k)) and _key_matcher(["return"])(str(k)) and t_pred(str(k))]
+    cf = [k for k in flat.keys() if chw_pred(str(k)) and f_pred(str(k))]
+    p_keys = [k for k in flat.keys() if _key_matcher(["chiller", "compressor"]) (str(k)) and _key_matcher(["power", "kw"]) (str(k))]
+    if not (cs and cr and cf and p_keys):
+        return {"error": "Need CHW supply/return temps, CHW flow, and chiller power"}
+    dfS = _df_from_readings(sum((flat[k] for k in cs), []))
+    dfR = _df_from_readings(sum((flat[k] for k in cr), []))
+    dfF = _df_from_readings(sum((flat[k] for k in cf), []))
+    dfP = _df_from_readings(sum((flat[k] for k in p_keys), []))
+    for d in (dfS, dfR, dfF, dfP):
+        d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfS.sort_values("timestamp"), dfR.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_s","_r"))
+    mm = pd.merge_asof(mm.sort_values("timestamp"), dfF.sort_values("timestamp"), on="timestamp", direction="nearest")
+    mm = pd.merge_asof(mm.sort_values("timestamp"), dfP.sort_values("timestamp"), on="timestamp", direction="nearest", suffixes=("","_kW"))
+    if mm.empty:
+        return {"error": "Could not align series"}
+    dT = (mm["reading_value_r"] - mm["reading_value_s"]).clip(lower=0)
+    flow = mm["reading_value"]
+    kW = mm["reading_value_kW"] if "reading_value_kW" in mm.columns else mm.iloc[:, -1]
+    c = 4.186  # cp of water (kJ/kg-K) scaled out in proxy
+    cop = (flow * dT * c) / (kW.replace(0, pd.NA))
+    cop = cop.replace([pd.NA, pd.NaT, float("inf")], pd.NA).dropna()
+    if cop.empty:
+        return {"error": "Insufficient variability for COP proxy"}
+    return {"cop_proxy_mean": round(float(cop.mean()),3), "cop_proxy_latest": round(float(cop.iloc[-1]),3), "notes": "Proxy only; units may not cancel."}
+
+
+def analyze_eer_seer(sensor_data):
+    """
+    Estimates EER from COP proxy (EER≈3.412*COP) and SEER as median EER across period.
+
+    Returns: { eer_median, seer_proxy }
+    """
+    cop = analyze_cooling_cop(sensor_data)
+    if "error" in cop:
+        return {"error": f"Upstream COP proxy missing: {cop['error']}"}
+    eer_vals = cop.get("cop_series") if isinstance(cop, dict) and cop.get("cop_series") is not None else None
+    # If we don't expose the series, derive from mean/latest
+    eer_median = 3.412 * float(cop["cop_proxy_mean"]) if cop.get("cop_proxy_mean") is not None else None
+    seer_proxy = eer_median  # simple proxy
+    return {"eer_median": (round(float(eer_median),2) if eer_median is not None else None), "seer_proxy": (round(float(seer_proxy),2) if seer_proxy is not None else None)}
+
+
+def analyze_eui(sensor_data, area_m2=None):
+    """
+    Computes Energy Use Intensity (kWh/m²·yr) from available kW/energy and site area.
+
+    Returns: { eui_kwh_per_m2_yr, total_kWh, days_covered }
+    """
+    if not area_m2 or float(area_m2) <= 0:
+        return {"error": "area_m2 required and must be >0"}
+    summ = analyze_electric_power_summary(sensor_data)
+    if "error" in summ:
+        return summ
+    start = pd.to_datetime(summ.get("period_start")) if summ.get("period_start") else None
+    end = pd.to_datetime(summ.get("period_end")) if summ.get("period_end") else None
+    if not (start and end):
+        return {"error": "Insufficient period bounds"}
+    days = max(1.0, (end - start).total_seconds() / 86400.0)
+    total_kwh = float(summ.get("total_kWh", 0.0))
+    annual_kwh = total_kwh * (365.0 / days)
+    eui = annual_kwh / float(area_m2)
+    return {"eui_kwh_per_m2_yr": round(float(eui),1), "total_kWh": round(total_kwh,1), "days_covered": round(days,1)}
+
+
+def analyze_fan_vfd_efficiency(sensor_data):
+    """
+    Computes Specific Fan Power (SFP) = kW / airflow; classifies efficiency band.
+
+    Returns: { sfp_mean, band }
+    """
+    flat = _aggregate_flat(sensor_data)
+    fan_pred = _key_matcher(["fan"]) ; p_pred = _key_matcher(["power", "kw"]) ; flow_pred = _key_matcher(["air_flow", "airflow", "flow_rate"])
+    p_keys = [k for k in flat.keys() if fan_pred(str(k)) and p_pred(str(k))]
+    f_keys = _select_keys(flat, flow_pred, False)
+    if not (p_keys and f_keys):
+        return {"error": "Need fan power and airflow"}
+    dfP = _df_from_readings(sum((flat[k] for k in p_keys), []))
+    dfF = _df_from_readings(sum((flat[k] for k in f_keys), []))
+    for d in (dfP, dfF): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfP.sort_values("timestamp"), dfF.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_kW","_flow"))
+    if mm.empty: return {"error": "Could not align fan power/flow"}
+    sfp = (mm["reading_value_kW"] / mm["reading_value_flow"].replace(0, pd.NA)).dropna()
+    if sfp.empty: return {"error": "Invalid SFP ratios"}
+    m = float(sfp.mean())
+    band = ("good" if m < 1.5 else ("ok" if m < 2.5 else "poor"))
+    return {"sfp_mean": round(m,3), "band": band}
+
+
+def analyze_pump_efficiency(sensor_data):
+    """
+    Computes Specific Pump Power (SPP) = kW / flow; flags high SPP.
+
+    Returns: { spp_mean, high_flag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    pump_pred = _key_matcher(["pump"]) ; p_pred = _key_matcher(["power", "kw"]) ; flow_pred = _key_matcher(["flow", "flow_rate"]) 
+    p_keys = [k for k in flat.keys() if pump_pred(str(k)) and p_pred(str(k))]
+    f_keys = _select_keys(flat, flow_pred, False)
+    if not (p_keys and f_keys):
+        return {"error": "Need pump power and flow"}
+    dfP = _df_from_readings(sum((flat[k] for k in p_keys), []))
+    dfF = _df_from_readings(sum((flat[k] for k in f_keys), []))
+    for d in (dfP, dfF): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfP.sort_values("timestamp"), dfF.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_kW","_flow"))
+    if mm.empty: return {"error": "Could not align pump power/flow"}
+    spp = (mm["reading_value_kW"] / mm["reading_value_flow"].replace(0, pd.NA)).dropna()
+    if spp.empty: return {"error": "Invalid SPP ratios"}
+    m = float(spp.mean())
+    return {"spp_mean": round(m,3), "high_flag": bool(m > 2.5)}
+
+
+def analyze_runtime_analysis(sensor_data, use_power_threshold=True):
+    """
+    Computes on/off runtime hours and duty cycle using a status signal or power threshold.
+
+    Returns: { runtime_hours, duty_cycle }
+    """
+    flat = _aggregate_flat(sensor_data)
+    status_pred = _key_matcher(["status", "run", "on", "command"]) ; p_pred = _key_matcher(["power", "kw"]) 
+    s_keys = _select_keys(flat, status_pred, False)
+    if s_keys:
+        df = _df_from_readings(sum((flat[k] for k in s_keys), []))
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+        on = (df["reading_value"].astype(float) > 0.5)
+        dt = df["timestamp"].diff().dt.total_seconds().fillna(0) / 3600.0
+        runtime_h = float((on * dt).sum())
+        duty = float(on.mean())
+        return {"runtime_hours": round(runtime_h,2), "duty_cycle": round(duty,3)}
+    if use_power_threshold:
+        p_keys = _select_keys(flat, p_pred, False)
+        if not p_keys:
+            return {"error": "No status or power series"}
+        df = _df_from_readings(sum((flat[k] for k in p_keys), []))
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+        thr = float(df["reading_value"].quantile(0.1))
+        on = df["reading_value"].astype(float) > thr
+        dt = df["timestamp"].diff().dt.total_seconds().fillna(0) / 3600.0
+        runtime_h = float((on * dt).sum())
+        duty = float(on.mean())
+        return {"runtime_hours": round(runtime_h,2), "duty_cycle": round(duty,3), "threshold": round(thr,2)}
+    return {"error": "Unable to determine runtime"}
+
+
+def analyze_schedule_compliance(sensor_data, schedule=None):
+    """
+    Checks equipment operation outside scheduled hours. If schedule not supplied, infers typical start/stop.
+
+    schedule format example: { 0: ["08:00","18:00"], ..., 6: ["10:00","16:00"] } where 0=Mon
+
+    Returns: { outside_runtime_hours, inferred: bool }
+    """
+    flat = _aggregate_flat(sensor_data)
+    # Build on-series from status or power
+    status_pred = _key_matcher(["status", "run", "on", "command"]) ; p_pred = _key_matcher(["power", "kw"]) 
+    s_keys = _select_keys(flat, status_pred, False)
+    if s_keys:
+        df = _df_from_readings(sum((flat[k] for k in s_keys), []))
+        df["on"] = (df["reading_value"].astype(float) > 0.5)
+    else:
+        p_keys = _select_keys(flat, p_pred, False)
+        if not p_keys: return {"error": "No status or power series"}
+        df = _df_from_readings(sum((flat[k] for k in p_keys), []))
+        thr = float(df["reading_value"].quantile(0.1))
+        df["on"] = (df["reading_value"].astype(float) > thr)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    df = df.set_index("timestamp").resample("15min").ffill()
+    df["on"] = df["on"].astype(bool)
+    inferred = False
+    if schedule is None:
+        inferred = True
+        # Infer: for each weekday, find 20th and 80th percentile hours where on=True
+        df["weekday"] = df.index.dayofweek
+        df["hour"] = df.index.hour + df.index.minute/60.0
+        sched = {}
+        for d in range(7):
+            subset = df[df["weekday"]==d]
+            if subset.empty or subset["on"].mean() < 0.05:
+                continue
+            hours = subset[subset["on"]]["hour"]
+            if hours.empty: 
+                continue
+            start_h = float(hours.quantile(0.2)); stop_h = float(hours.quantile(0.8))
+            sched[d] = [start_h, stop_h]
+    else:
+        # Parse provided schedule
+        sched = {}
+        for d, win in (schedule or {}).items():
+            try:
+                st = pd.to_datetime(win[0]).hour + pd.to_datetime(win[0]).minute/60.0
+                en = pd.to_datetime(win[1]).hour + pd.to_datetime(win[1]).minute/60.0
+                sched[int(d)] = [st, en]
+            except Exception:
+                continue
+    # Compute outside-hours runtime
+    df["weekday"] = df.index.dayofweek
+    df["hour"] = df.index.hour + df.index.minute/60.0
+    outside = []
+    for ts, row in df.iterrows():
+        d = int(row["weekday"])
+        if d not in sched:
+            outside.append(bool(row["on"]))
+        else:
+            st, en = sched[d]
+            outside.append(bool(row["on"]) and not (st <= row["hour"] <= en))
+    outside = pd.Series(outside, index=df.index)
+    outside_runtime_h = float(outside.mean() * len(outside) * 0.25)
+    return {"outside_runtime_hours": round(outside_runtime_h,2), "inferred": inferred}
+
+
+def analyze_equipment_cycling_health(sensor_data):
+    """
+    Detects short/long cycling via on/off transitions; reports cycles/hour and short-cycle flag.
+
+    Returns: { cycles_per_hour, short_cycle_flag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    status_pred = _key_matcher(["status", "run", "on", "command"]) ; p_pred = _key_matcher(["power", "kw"]) 
+    s_keys = _select_keys(flat, status_pred, False)
+    if s_keys:
+        df = _df_from_readings(sum((flat[k] for k in s_keys), []))
+        sig = (df["reading_value"].astype(float) > 0.5)
+    else:
+        p_keys = _select_keys(flat, p_pred, False)
+        if not p_keys: return {"error": "No status or power series"}
+        df = _df_from_readings(sum((flat[k] for k in p_keys), []))
+        thr = float(df["reading_value"].quantile(0.1))
+        sig = (df["reading_value"].astype(float) > thr)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+    sig = sig.reset_index(drop=True)
+    # Count rising edges
+    rises = 0
+    for i in range(1, len(sig)):
+        if (not bool(sig.iloc[i-1])) and bool(sig.iloc[i]):
+            rises += 1
+    hours = max(1e-6, (df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]).total_seconds()/3600.0)
+    cph = rises / hours
+    short_flag = bool(cph > 6.0)  # >6 cycles/hour
+    return {"cycles_per_hour": round(float(cph),2), "short_cycle_flag": short_flag}
+
+
+def analyze_alarm_event_summary(sensor_data):
+    """
+    Summarizes alarms/events by type and basic reliability metrics (counts, MTBF approx).
+
+    Returns: { total_events, by_type: {type: count}, mtbf_hours }
+    """
+    flat = _aggregate_flat(sensor_data)
+    evt_pred = _key_matcher(["alarm", "fault", "event", "code"]) 
+    keys = _select_keys(flat, evt_pred, False)
+    if not keys:
+        return {"error": "No alarm/event series"}
+    events = []
+    for k in keys:
+        df = _df_from_readings(flat[k])
+        if df.empty: continue
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+        # Consider non-zero as event, if string take unique values as types
+        if pd.api.types.is_numeric_dtype(df["reading_value"]):
+            ev = df[df["reading_value"].astype(float) != 0.0][["timestamp"]].copy()
+            ev["type"] = str(k)
+        else:
+            ev = df[df["reading_value"].astype(str).str.len() > 0][["timestamp", "reading_value"]].copy()
+            ev = ev.rename(columns={"reading_value": "type"})
+        events.append(ev)
+    if not events:
+        return {"error": "No events detected"}
+    ev = pd.concat(events, ignore_index=True).sort_values("timestamp")
+    total = int(len(ev))
+    by_type = ev["type"].value_counts().to_dict()
+    mtbf = None
+    if total >= 2:
+        diffs = ev["timestamp"].sort_values().diff().dropna().dt.total_seconds()/3600.0
+        if not diffs.empty:
+            mtbf = float(diffs.mean())
+    return {"total_events": total, "by_type": by_type, "mtbf_hours": (round(mtbf,2) if mtbf is not None else None)}
+
+
+def analyze_sensor_correlation_map(sensor_data, max_sensors=20):
+    """
+    Computes a correlation matrix across up to max_sensors numeric signals.
+
+    Returns: { sensors: [names], corr: [[...]] }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat: return {"error": "No data"}
+    frames = []
+    names = []
+    for k, readings in flat.items():
+        df = _df_from_readings(readings)
+        if df.empty: continue
+        v = df[["timestamp","reading_value"]].copy()
+        v["timestamp"] = pd.to_datetime(v["timestamp"], errors="coerce")
+        v = v.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+        v = v.resample("5min").mean().rename(columns={"reading_value": str(k)})
+        frames.append(v)
+        names.append(str(k))
+        if len(names) >= max_sensors:
+            break
+    if not frames:
+        return {"error": "No numeric series"}
+    X = pd.concat(frames, axis=1).dropna(how="all")
+    if X.empty:
+        return {"error": "No aligned data"}
+    corr = X.corr().fillna(0.0)
+    return {"sensors": corr.columns.tolist(), "corr": [[round(float(x),3) for x in row] for row in corr.values.tolist()]}
+
+
+def analyze_lead_lag(sensor_data):
+    """
+    Infers lead/lag between the two most variant signals via cross-correlation.
+
+    Returns: { signal_a, signal_b, lag_minutes, corr_at_lag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    # Build aligned 5-min dataframe
+    frames = []
+    for k, readings in flat.items():
+        df = _df_from_readings(readings)
+        if df.empty: continue
+        v = df[["timestamp","reading_value"]].copy()
+        v["timestamp"] = pd.to_datetime(v["timestamp"], errors="coerce")
+        v = v.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+        v = v.resample("5min").mean().rename(columns={"reading_value": str(k)})
+        frames.append(v)
+    if len(frames) < 2:
+        return {"error": "Need at least two series"}
+    X = pd.concat(frames, axis=1).dropna()
+    if X.shape[1] < 2:
+        return {"error": "Insufficient aligned series"}
+    # Pick top-2 by variance
+    variances = X.var().sort_values(ascending=False)
+    a, b = variances.index[:2]
+    xa = X[a].astype(float) - X[a].astype(float).mean()
+    xb = X[b].astype(float) - X[b].astype(float).mean()
+    # Cross-correlation for lags in +/- 24 steps (2 hours window at 5min)
+    max_steps = 24
+    best = (0, 0.0)
+    for lag in range(-max_steps, max_steps+1):
+        if lag < 0:
+            corr = xa.shift(-lag).corr(xb)
+        else:
+            corr = xa.corr(xb.shift(lag))
+        if pd.notna(corr) and abs(corr) > abs(best[1]):
+            best = (lag, corr)
+    return {"signal_a": str(a), "signal_b": str(b), "lag_minutes": int(best[0]*5), "corr_at_lag": round(float(best[1]),3)}
+
+
+def analyze_weather_normalization(sensor_data, base_temp_c=18.0):
+    """
+    Computes CDD/HDD and normalizes energy per degree-day using OAT and total kW.
+
+    Returns: { kWh_per_CDD, kWh_per_HDD, days }
+    """
+    flat = _aggregate_flat(sensor_data)
+    oat_pred = _key_matcher(["outside_air", "outdoor"]) ; t_pred = _key_matcher(["temperature", "temp"]) ; p_pred = _key_matcher(["power", "kw"]) 
+    O = [k for k in flat.keys() if oat_pred(str(k)) and t_pred(str(k))]
+    P = _select_keys(flat, p_pred, False)
+    if not (O and P):
+        return {"error": "Need OAT and power series"}
+    dfO = _df_from_readings(sum((flat[k] for k in O), []))
+    dfP = _df_from_readings(sum((flat[k] for k in P), []))
+    for d in (dfO, dfP):
+        d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    O15 = dfO.set_index("timestamp").sort_index().resample("1H").mean()[["reading_value"]].rename(columns={"reading_value": "OAT"})
+    P15 = dfP.set_index("timestamp").sort_index().resample("1H").mean()[["reading_value"]].rename(columns={"reading_value": "kW"})
+    X = O15.join(P15, how="inner").dropna()
+    if X.empty: return {"error": "No aligned OAT/power"}
+    X["date"] = X.index.date
+    daily = X.groupby("date").agg({"OAT":"mean", "kW":"sum"})
+    daily["kWh"] = daily["kW"]  # since hourly sum of kW approximates kWh
+    daily["CDD"] = (daily["OAT"] - float(base_temp_c)).clip(lower=0)
+    daily["HDD"] = (float(base_temp_c) - daily["OAT"]).clip(lower=0)
+    cdd = float(daily["CDD"].sum()); hdd = float(daily["HDD"].sum()); kwh = float(daily["kWh"].sum())
+    kwh_per_cdd = (kwh / cdd) if cdd > 0 else None
+    kwh_per_hdd = (kwh / hdd) if hdd > 0 else None
+    return {"kWh_per_CDD": (round(kwh_per_cdd,2) if kwh_per_cdd is not None else None), "kWh_per_HDD": (round(kwh_per_hdd,2) if kwh_per_hdd is not None else None), "days": int(len(daily))}
+
+
+def analyze_change_point_detection(sensor_data):
+    """
+    Detects regime shifts in a KPI (defaults to total kW) using rolling z-score.
+
+    Returns: { change_points: [iso timestamps] }
+    """
+    flat = _aggregate_flat(sensor_data)
+    p_pred = _key_matcher(["power", "kw"]) 
+    P = _select_keys(flat, p_pred, False)
+    if not P: return {"error": "No power series"}
+    dfP = _df_from_readings(sum((flat[k] for k in P), []))
+    dfP["timestamp"] = pd.to_datetime(dfP["timestamp"], errors="coerce")
+    s = dfP.set_index("timestamp").sort_index().resample("15min").mean()["reading_value"].dropna()
+    if s.empty: return {"error": "Empty power series"}
+    r = s.rolling(96, min_periods=24)  # 1-day window
+    z = (s - r.mean()) / (r.std().replace(0, pd.NA))
+    cp = s.index[(z.abs() > 3.0)].to_list()
+    return {"change_points": [t.isoformat() for t in cp]}
+
+
+def analyze_short_horizon_forecasting(sensor_data, horizon_steps=12):
+    """
+    Predicts next N steps (5-min) using a simple persistence+drift model with uncertainty.
+
+    Returns: { forecast: [values], lower: [values], upper: [values], step_minutes }
+    """
+    flat = _aggregate_flat(sensor_data)
+    p_pred = _key_matcher(["power", "kw"]) 
+    P = _select_keys(flat, p_pred, False)
+    if not P: return {"error": "No power series"}
+    dfP = _df_from_readings(sum((flat[k] for k in P), []))
+    s = dfP[["timestamp","reading_value"]].copy()
+    s["timestamp"] = pd.to_datetime(s["timestamp"], errors="coerce")
+    s = s.dropna(subset=["timestamp"]).set_index("timestamp").sort_index().resample("5min").mean()["reading_value"].dropna()
+    if len(s) < 12: return {"error": "Insufficient history"}
+    drift = float((s.iloc[-1] - s.iloc[-12])) / 12.0
+    sigma = float(s.rolling(36, min_periods=12).std().iloc[-1] or 0.0)
+    last = float(s.iloc[-1])
+    fc = [last + (i+1)*drift for i in range(int(horizon_steps))]
+    lower = [v - 1.28*sigma for v in fc]
+    upper = [v + 1.28*sigma for v in fc]
+    return {"forecast": [round(float(v),2) for v in fc], "lower": [round(float(v),2) for v in lower], "upper": [round(float(v),2) for v in upper], "step_minutes": 5}
+
+
+def analyze_anomaly_detection_statistical(sensor_data, z_thresh=3.5):
+    """
+    Detects generic anomalies for each numeric series using robust z (median/MAD).
+
+    Returns: { totals: {sensor: count}, examples: {sensor: [idx]} }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat: return {"error": "No data"}
+    totals = {}; examples = {}
+    for k, readings in flat.items():
+        df = _df_from_readings(readings)
+        if df.empty: continue
+        x = df["reading_value"].astype(float)
+        med = float(x.median())
+        mad = float((x - med).abs().median() or 0.0)
+        if mad == 0: 
+            totals[str(k)] = 0
+            continue
+        z = 0.6745 * (x - med) / mad
+        idx = z.abs() > float(z_thresh)
+        totals[str(k)] = int(idx.sum())
+        if idx.any():
+            examples[str(k)] = df[idx].head(5)["timestamp"].astype(str).tolist()
+    return {"totals": totals, "examples": examples}
+
+
+def analyze_ach(sensor_data, zone_volume_m3=None):
+    """
+    Estimates Air Changes per Hour (ACH) as airflow/volume (scaled to per hour).
+
+    Returns: { ach_mean, ach_latest, flag }
+    """
+    if not zone_volume_m3 or float(zone_volume_m3) <= 0:
+        return {"error": "zone_volume_m3 required and must be >0"}
+    flat = _aggregate_flat(sensor_data)
+    flow_pred = _key_matcher(["air_flow", "airflow", "flow_rate"]) 
+    keys = _select_keys(flat, flow_pred, False)
+    if not keys:
+        return {"error": "No airflow series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    s = df.set_index("timestamp").sort_index().resample("5min").mean()["reading_value"].dropna()
+    if s.empty: return {"error": "Empty airflow series"}
+    # Assume flow is in m3/s if not specified; ACH = (flow[m3/s] * 3600) / volume
+    ach = (s.astype(float) * 3600.0) / float(zone_volume_m3)
+    return {"ach_mean": round(float(ach.mean()),2), "ach_latest": round(float(ach.iloc[-1]),2), "flag": (float(ach.mean()) < 3.0)}
+
+
+def analyze_ventilation_effectiveness(sensor_data, co2_threshold=1000):
+    """
+    CO2-based ventilation adequacy: percent time below threshold and exceedance stats.
+
+    Returns: { pct_below_threshold, max_exceedance, hours_above }
+    """
+    flat = _aggregate_flat(sensor_data)
+    co2_pred = _key_matcher(["co2"]) 
+    keys = _select_keys(flat, co2_pred, False)
+    if not keys:
+        return {"error": "No CO2 series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    s = df.set_index("timestamp").sort_index().resample("5min").mean()["reading_value"].dropna()
+    thr = float(co2_threshold)
+    pct_ok = float((s <= thr).mean())
+    exceed = (s - thr).clip(lower=0)
+    hours_above = float((exceed > 0).mean() * len(exceed) * (5/60))
+    return {"pct_below_threshold": round(pct_ok,3), "max_exceedance": round(float(exceed.max()),1), "hours_above": round(hours_above,2)}
+
+
+def analyze_outdoor_air_fraction(sensor_data):
+    """
+    Computes realized Outdoor Air fraction using temperatures: f_OA = (MAT - RAT)/(OAT - RAT).
+
+    Returns: { mean_fraction, latest_fraction }
+    """
+    flat = _aggregate_flat(sensor_data)
+    r_pred = _key_matcher(["return_air", "return"]) ; m_pred = _key_matcher(["mixed_air", "mix"]) ; o_pred = _key_matcher(["outside_air", "outdoor"]) ; t_pred = _key_matcher(["temperature", "temp"]) 
+    Rk = [k for k in flat.keys() if r_pred(str(k)) and t_pred(str(k))]
+    Mk = [k for k in flat.keys() if m_pred(str(k)) and t_pred(str(k))]
+    Ok = [k for k in flat.keys() if o_pred(str(k)) and t_pred(str(k))]
+    if not (Rk and Mk and Ok):
+        return {"error": "Need RAT, MAT, and OAT series"}
+    dfR = _df_from_readings(sum((flat[k] for k in Rk), []))
+    dfM = _df_from_readings(sum((flat[k] for k in Mk), []))
+    dfO = _df_from_readings(sum((flat[k] for k in Ok), []))
+    for d in (dfR, dfM, dfO): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfM.sort_values("timestamp"), dfR.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_m","_r"))
+    mm = pd.merge_asof(mm.sort_values("timestamp"), dfO.sort_values("timestamp"), on="timestamp", direction="nearest")
+    if mm.empty: return {"error": "Could not align series"}
+    num = mm["reading_value_m"] - mm["reading_value_r"]
+    den = (mm["reading_value"] - mm["reading_value_r"]).replace(0, pd.NA)
+    frac = (num / den).clip(lower=0, upper=1).dropna()
+    if frac.empty: return {"error": "Invalid OA fraction"}
+    return {"mean_fraction": round(float(frac.mean()),3), "latest_fraction": round(float(frac.iloc[-1]),3)}
+
+
+def analyze_setpoint_compliance(sensor_data, tolerance=1.0):
+    """
+    Computes MAE/MAPE and percent within band for measurement vs setpoint.
+
+    Returns: { mae, mape, pct_within }
+    """
+    flat = _aggregate_flat(sensor_data)
+    sp_pred = _key_matcher(["setpoint", "sp"]) ; m_pred = _key_matcher(["temperature", "temp", "value"]) 
+    sp_keys = _select_keys(flat, sp_pred, False)
+    m_keys = _select_keys(flat, m_pred, False)
+    if not (sp_keys and m_keys):
+        return {"error": "Need setpoint and measurement series"}
+    dfS = _df_from_readings(sum((flat[k] for k in sp_keys), []))
+    dfM = _df_from_readings(sum((flat[k] for k in m_keys), []))
+    for d in (dfS, dfM): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfM.sort_values("timestamp"), dfS.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_meas","_sp"))
+    if mm.empty: return {"error": "Could not align setpoint/measurement"}
+    err = (mm["reading_value_meas"].astype(float) - mm["reading_value_sp"].astype(float)).abs()
+    mae = float(err.mean())
+    denom = mm["reading_value_sp"].replace(0, pd.NA).abs()
+    mape = float((err / denom).dropna().mean()) if denom.notna().any() else None
+    within = float((err <= float(tolerance)).mean())
+    return {"mae": round(mae,2), "mape": (round(mape,3) if mape is not None else None), "pct_within": round(within,3), "tolerance": float(tolerance)}
+
+
+def analyze_hunting_oscillation(sensor_data):
+    """
+    Detects oscillations by zero-crossings of de-meaned signal and estimates amplitude/frequency.
+
+    Returns: { frequency_cph, amplitude, index }
+    """
+    flat = _aggregate_flat(sensor_data)
+    # Choose a control variable: temp, pressure, or valve/command
+    pred = _key_matcher(["temperature", "pressure", "valve", "command", "position"]) 
+    keys = _select_keys(flat, pred, False)
+    if not keys: return {"error": "No suitable control signal"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    s = df.set_index("timestamp").sort_index().resample("1min").mean()["reading_value"].dropna()
+    if len(s) < 60: return {"error": "Insufficient length"}
+    x = s - s.mean()
+    # Zero-crossing detection
+    signs = (x > 0).astype(int)
+    crossings = (signs.diff().abs() == 1)
+    # Period estimation: time between alternating crossings (approx 1/2 period per crossing)
+    times = s.index[crossings]
+    if len(times) < 4: return {"error": "Insufficient crossings"}
+    diffs = pd.Series(times).diff().dropna().dt.total_seconds()
+    if diffs.empty: return {"error": "No period diffs"}
+    period_s = float(diffs.median() * 2)  # approx full period
+    freq_cph = 3600.0 / period_s if period_s > 0 else 0.0
+    amp = float((x.max() - x.min()) / 2.0)
+    index = float(amp * freq_cph)
+    return {"frequency_cph": round(freq_cph,2), "amplitude": round(amp,2), "index": round(index,2)}
+
+
+def analyze_actuator_stiction(sensor_data, flatline_points=10):
+    """
+    Detects actuator stiction/nonlinearity using position flatlines and low responsiveness.
+
+    Returns: { stiction_index, flatline_events, low_motion_pct, flag }
+    """
+    flat = _aggregate_flat(sensor_data)
+    pos_pred = _key_matcher(["valve", "damper", "actuator"]) ; p2 = _key_matcher(["position", "command"]) 
+    keys = [k for k in flat.keys() if pos_pred(str(k)) and p2(str(k))]
+    if not keys:
+        return {"error": "No actuator position/command series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    if df.empty: return {"error": "Empty actuator series"}
+    v = df["reading_value"].astype(float).reset_index(drop=True)
+    # Flatlines
+    flatlines = 0; run = 1
+    for i in range(1, len(v)):
+        if v.iloc[i] == v.iloc[i-1]:
+            run += 1
+        else:
+            if run >= int(flatline_points): flatlines += 1
+            run = 1
+    if run >= int(flatline_points): flatlines += 1
+    # Low motion percentage (small incremental changes)
+    dv = v.diff().abs().fillna(0)
+    low_motion_pct = float((dv <= 0.2).mean())  # <=0.2% step
+    idx = float(flatlines) + low_motion_pct
+    return {"stiction_index": round(idx,3), "flatline_events": int(flatlines), "low_motion_pct": round(low_motion_pct,3), "flag": bool(idx > 2)}
+
+
+def analyze_co_co2_safety(sensor_data, co_threshold=30.0, co2_threshold=5000.0):
+    """
+    Safety analysis for CO and CO2: peak, hours above thresholds, and simple severity.
+
+    Returns: { CO: {...}, CO2: {...} }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat: return {"error": "No data"}
+    # Separate CO from CO2 by name
+    co_keys = [k for k in flat.keys() if "co2" not in str(k).lower() and "co" in str(k).lower()]
+    co2_keys = [k for k in flat.keys() if "co2" in str(k).lower()]
+    def summarize(keys, thr):
+        if not keys: return {"error": "missing"}
+        df = _df_from_readings(sum((flat[k] for k in keys), []))
+        if df.empty: return {"error": "empty"}
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        s = df.set_index("timestamp").sort_index().resample("5min").mean()["reading_value"].dropna().astype(float)
+        if s.empty: return {"error": "empty"}
+        peak = float(s.max()); hours_above = float((s > float(thr)).mean() * len(s) * (5/60))
+        twa8 = float(s.rolling(int(8*60/5), min_periods=3).mean().max())  # 8h TWA max
+        severity = ("danger" if peak > 2*float(thr) else ("warn" if peak > float(thr) or hours_above>0 else "ok"))
+        return {"peak": round(peak,1), "hours_above": round(hours_above,2), "twa8_max": round(twa8,1), "threshold": float(thr), "severity": severity}
+    return {"CO": summarize(co_keys, co_threshold), "CO2": summarize(co2_keys, co2_threshold)}
+
+
+def analyze_illuminance_luminance_tracking(sensor_data, target_lux=None, band=100.0):
+    """
+    Light level tracking vs target: mean, median, MAE to target, and percent within band.
+
+    Returns: { mean_lux, median_lux, mae_to_target, pct_within_band }
+    """
+    flat = _aggregate_flat(sensor_data)
+    lux_pred = _key_matcher(["illuminance", "lux", "light"]) 
+    keys = _select_keys(flat, lux_pred, False)
+    if not keys: return {"error": "No illuminance series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    s = df["reading_value"].astype(float)
+    mean_lux = float(s.mean()); median_lux = float(s.median())
+    if target_lux is None:
+        return {"mean_lux": round(mean_lux,1), "median_lux": round(median_lux,1), "mae_to_target": None, "pct_within_band": None}
+    err = (s - float(target_lux)).abs()
+    within = (err <= float(band)).mean()
+    return {"mean_lux": round(mean_lux,1), "median_lux": round(median_lux,1), "mae_to_target": round(float(err.mean()),1), "pct_within_band": round(float(within),3), "target_lux": float(target_lux), "band": float(band)}
+
+
+def analyze_noise_monitoring(sensor_data, comfort_threshold=55.0, high_threshold=70.0):
+    """
+    Acoustic comfort percentiles and exceedances at two thresholds.
+
+    Returns: { p50, p90, max, pct_above_comfort, pct_above_high }
+    """
+    flat = _aggregate_flat(sensor_data)
+    n_pred = _key_matcher(["noise", "sound", "dba", "db"]) 
+    keys = _select_keys(flat, n_pred, False)
+    if not keys: return {"error": "No noise series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    x = df["reading_value"].astype(float)
+    p50 = float(x.quantile(0.5)); p90 = float(x.quantile(0.9)); mx = float(x.max())
+    pct_comf = float((x > float(comfort_threshold)).mean())
+    pct_high = float((x > float(high_threshold)).mean())
+    return {"p50": round(p50,1), "p90": round(p90,1), "max": round(mx,1), "pct_above_comfort": round(pct_comf,3), "pct_above_high": round(pct_high,3)}
+
+
+def analyze_sensor_swap_bias_inference(sensor_data):
+    """
+    Heuristics to infer swapped sensors or strong bias using expected ordering (supply/return, inlet/outlet).
+
+    Returns: { swap_suspicions: ["A<->B"], bias_candidates: [{sensor, bias}] }
+    """
+    flat = _aggregate_flat(sensor_data)
+    if not flat: return {"error": "No data"}
+    keys = list(flat.keys())
+    susp = []
+    bias = []
+    # Supply vs return temperature
+    sup_t = [k for k in keys if "supply" in str(k).lower() and ("temp" in str(k).lower() or "temperature" in str(k).lower())]
+    ret_t = [k for k in keys if "return" in str(k).lower() and ("temp" in str(k).lower() or "temperature" in str(k).lower())]
+    if sup_t and ret_t:
+        dfS = _df_from_readings(sum((flat[k] for k in sup_t), []))
+        dfR = _df_from_readings(sum((flat[k] for k in ret_t), []))
+        mm = pd.merge_asof(dfS.sort_values("timestamp"), dfR.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_s","_r"))
+        if not mm.empty:
+            diff = (mm["reading_value_s"] - mm["reading_value_r"])  # expected negative for CHW coil discharge
+            if (diff > 0.5).mean() > 0.7:
+                susp.append(f"{sup_t[0]}<->{ret_t[0]}")
+    # Bias: detect sensors far from peers median by constant offset
+    series = []
+    for k in keys:
+        df = _df_from_readings(flat[k])
+        if df.empty: continue
+        series.append(df["reading_value"].astype(float).median())
+    if len(series) >= 3:
+        med_all = float(pd.Series(series).median())
+        for k in keys:
+            df = _df_from_readings(flat[k])
+            if df.empty: continue
+            med = float(df["reading_value"].astype(float).median())
+            if abs(med - med_all) > 2.0:
+                bias.append({"sensor": str(k), "bias": round(float(med - med_all),2)})
+    return {"swap_suspicions": susp, "bias_candidates": bias}
+
+
+def analyze_economizer_fault_rules(sensor_data, damper_open_thresh=30.0):
+    """
+    Rule-based economizer FDD using OAT/RAT/MAT and outdoor damper position.
+
+    Returns: { does_not_open_count, stuck_open_count, suggestions }
+    """
+    flat = _aggregate_flat(sensor_data)
+    r_pred = _key_matcher(["return_air", "return"]) ; m_pred = _key_matcher(["mixed_air", "mix"]) ; o_pred = _key_matcher(["outside_air", "outdoor"]) ; t_pred = _key_matcher(["temperature", "temp"]) ; d_pred = _key_matcher(["damper", "outdoor", "economizer"]) 
+    Rk = [k for k in flat.keys() if r_pred(str(k)) and t_pred(str(k))]
+    Mk = [k for k in flat.keys() if m_pred(str(k)) and t_pred(str(k))]
+    Ok = [k for k in flat.keys() if o_pred(str(k)) and t_pred(str(k))]
+    Dk = [k for k in flat.keys() if d_pred(str(k)) and ("position" in str(k).lower())]
+    if not (Rk and Mk and Ok):
+        return {"error": "Need RAT, MAT, and OAT series"}
+    dfR = _df_from_readings(sum((flat[k] for k in Rk), []))
+    dfM = _df_from_readings(sum((flat[k] for k in Mk), []))
+    dfO = _df_from_readings(sum((flat[k] for k in Ok), []))
+    for d in (dfR, dfM, dfO): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfM.sort_values("timestamp"), dfR.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_m","_r"))
+    mm = pd.merge_asof(mm.sort_values("timestamp"), dfO.sort_values("timestamp"), on="timestamp", direction="nearest")
+    if mm.empty: return {"error": "Could not align temps"}
+    if Dk:
+        dfD = _df_from_readings(sum((flat[k] for k in Dk), []))
+        dfD["timestamp"] = pd.to_datetime(dfD["timestamp"], errors="coerce")
+        mm = pd.merge_asof(mm.sort_values("timestamp"), dfD.sort_values("timestamp"), on="timestamp", direction="nearest", suffixes=("","_damper"))
+        damper = mm.filter(like="reading_value_damper").iloc[:, -1]
+    else:
+        damper = pd.Series(index=mm.index, dtype=float)
+        damper[:] = pd.NA
+    # Rules
+    free_cool = (mm["reading_value"] < mm["reading_value_r"] - 1.0)  # OAT < RAT
+    damper_low = (damper.fillna(0) < float(damper_open_thresh))
+    does_not_open = (free_cool & damper_low).sum()
+    hot_out = (mm["reading_value"] > mm["reading_value_r"] + 1.0)  # OAT > RAT
+    damper_high = (damper.fillna(100) > 60.0)
+    stuck_open = (hot_out & damper_high).sum()
+    sugg = []
+    if does_not_open > 0: sugg.append("Check economizer enable/setpoints or actuator")
+    if stuck_open > 0: sugg.append("Verify OA damper not stuck/leaking; adjust limits")
+    return {"does_not_open_count": int(does_not_open), "stuck_open_count": int(stuck_open), "suggestions": sugg}
+
+
+def analyze_low_delta_t_syndrome(sensor_data):
+    """
+    Dedicated low-ΔT syndrome detection on CHW loop.
+
+    Returns: { pct_below_3C, pct_below_5C, hours_low_dt, syndrome_flag }
+    """
+    res = analyze_chilled_water_delta_t(sensor_data)
+    if "error" in res:
+        return res
+    # Recompute distribution if possible
+    flat = _aggregate_flat(sensor_data)
+    cs_pred = _key_matcher(["chilled_water", "chw"]) ; sup_pred = _key_matcher(["supply"]) ; ret_pred = _key_matcher(["return"]) ; t_pred = _key_matcher(["temperature", "temp"]) 
+    ChwS = [k for k in flat.keys() if cs_pred(str(k)) and sup_pred(str(k)) and t_pred(str(k))]
+    ChwR = [k for k in flat.keys() if cs_pred(str(k)) and ret_pred(str(k)) and t_pred(str(k))]
+    if not (ChwS and ChwR):
+        return {"error": "Need CHW supply/return temps"}
+    dfS = _df_from_readings(sum((flat[k] for k in ChwS), []))
+    dfR = _df_from_readings(sum((flat[k] for k in ChwR), []))
+    for d in (dfS, dfR): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfR.sort_values("timestamp"), dfS.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_r","_s"))
+    if mm.empty: return {"error": "Could not align CHW temps"}
+    dT = (mm["reading_value_r"] - mm["reading_value_s"]).clip(lower=0)
+    pct3 = float((dT < 3.0).mean())
+    pct5 = float((dT < 5.0).mean())
+    hours = float(len(dT) * (5/60))
+    flag = bool(pct3 > 0.5 or pct5 > 0.7)
+    return {"pct_below_3C": round(pct3,3), "pct_below_5C": round(pct5,3), "hours_low_dt": round(hours,1), "syndrome_flag": flag}
+
+
+def analyze_simultaneous_heating_cooling(sensor_data):
+    """
+    Detects overlaps in heating/cooling causing energy waste using valve/command proxies.
+
+    Returns: { overlap_pct, overlap_hours }
+    """
+    flat = _aggregate_flat(sensor_data)
+    heat_pred = _key_matcher(["heating", "hot_water", "reheat"]) ; cool_pred = _key_matcher(["cool", "chilled_water", "compressor"]) ; pos_pred = _key_matcher(["position", "command", "valve"]) 
+    H = [k for k in flat.keys() if heat_pred(str(k)) and pos_pred(str(k))]
+    C = [k for k in flat.keys() if cool_pred(str(k)) and pos_pred(str(k))]
+    if not (H and C):
+        return {"error": "Need heating and cooling valve/command series"}
+    dfH = _df_from_readings(sum((flat[k] for k in H), []))
+    dfC = _df_from_readings(sum((flat[k] for k in C), []))
+    for d in (dfH, dfC): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfH.sort_values("timestamp"), dfC.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_h","_c"))
+    if mm.empty: return {"error": "Could not align heating/cooling"}
+    h_on = (mm["reading_value_h"].astype(float) > 10.0)
+    c_on = (mm["reading_value_c"].astype(float) > 10.0)
+    overlap = (h_on & c_on)
+    pct = float(overlap.mean()) if len(overlap) else 0.0
+    hours = float(overlap.mean() * len(overlap) * (5/60))
+    return {"overlap_pct": round(pct,3), "overlap_hours": round(hours,2)}
+
+
+def analyze_benchmarking_dashboard(sensor_data, area_m2=None):
+    """
+    Produces a compact set of KPIs for benchmarking: energy, comfort, ventilation.
+
+    Returns: { energy: {...}, comfort: {...}, ventilation: {...} }
+    """
+    energy = analyze_electric_power_summary(sensor_data)
+    if area_m2 and not ("error" in energy):
+        eui = analyze_eui(sensor_data, area_m2=area_m2)
+        energy["eui_kwh_per_m2_yr"] = eui.get("eui_kwh_per_m2_yr") if isinstance(eui, dict) else None
+    comfort = analyze_zone_temperature_summary(sensor_data) if callable(globals().get("analyze_zone_temperature_summary")) else {"error": "no comfort"}
+    vent = analyze_ventilation_effectiveness(sensor_data) if callable(globals().get("analyze_ventilation_effectiveness")) else {"error": "no ventilation"}
+    return {"energy": energy, "comfort": comfort, "ventilation": vent}
+
+
+def analyze_control_loop_auto_tuning_aid(sensor_data):
+    """
+    Suggests rough PID ranges from oscillation frequency and amplitude metrics.
+
+    Returns: { suggested_kp, suggested_ti, suggested_td, notes }
+    """
+    osc = analyze_hunting_oscillation(sensor_data)
+    if "error" in osc:
+        return {"error": "Need a control signal to infer oscillation"}
+    freq = float(osc.get("frequency_cph") or 0.0)
+    if freq <= 0:
+        return {"suggested_kp": None, "suggested_ti": None, "suggested_td": None, "notes": "No oscillation detected; increase Kp until slight oscillation, then back off 20%"}
+    period_h = 1.0 / max(freq, 1e-6)
+    ti = max(0.05, period_h/4)  # integral time ~ quarter period
+    td = max(0.0, period_h/8)   # derivative time ~ eighth period
+    # Kp from amplitude index (smaller index -> allow higher Kp)
+    idx = float(osc.get("index") or 0.0)
+    kp = max(0.1, 1.0 / max(idx, 0.5))
+    return {"suggested_kp": round(kp,3), "suggested_ti_hours": round(ti,3), "suggested_td_hours": round(td,3), "notes": "Ziegler-Nichols inspired heuristics; verify on-site."}
+
+
+def analyze_residual_based_coil_fdd(sensor_data):
+    """
+    Residual-based coil fouling/leakage detection using valve position and CHW ΔT.
+
+    Returns: { residual_mean, residual_std, fouling_flag, notes }
+    """
+    flat = _aggregate_flat(sensor_data)
+    v_pred = _key_matcher(["valve", "position"]) ; chw_pred = _key_matcher(["chilled_water", "chw"]) ; sup_pred = _key_matcher(["supply"]) ; ret_pred = _key_matcher(["return"]) ; t_pred = _key_matcher(["temperature", "temp"]) 
+    V = _select_keys(flat, v_pred, False)
+    ChwS = [k for k in flat.keys() if chw_pred(str(k)) and sup_pred(str(k)) and t_pred(str(k))]
+    ChwR = [k for k in flat.keys() if chw_pred(str(k)) and ret_pred(str(k)) and t_pred(str(k))]
+    if not (V and ChwS and ChwR):
+        return {"error": "Need valve position and CHW supply/return temps"}
+    dfV = _df_from_readings(sum((flat[k] for k in V), []))
+    dfS = _df_from_readings(sum((flat[k] for k in ChwS), []))
+    dfR = _df_from_readings(sum((flat[k] for k in ChwR), []))
+    for d in (dfV, dfS, dfR): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfV.sort_values("timestamp"), dfS.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_v","_s"))
+    mm = pd.merge_asof(mm.sort_values("timestamp"), dfR.sort_values("timestamp"), on="timestamp", direction="nearest", suffixes=("","_r"))
+    if mm.empty: return {"error": "Could not align series"}
+    dT = (mm["reading_value_r"] - mm["reading_value_s"]).clip(lower=0)
+    pos = mm.filter(like="reading_value_v").iloc[:, -1].astype(float)
+    if len(pos) < 10: return {"error": "Insufficient points"}
+    # Simple linear fit dT ~ a*pos + b
+    try:
+        a = float(((pos - pos.mean())*(dT - dT.mean())).sum() / max((pos - pos.mean())**2).sum(),)
+    except Exception:
+        a = 0.0
+    b = float(dT.mean() - a*pos.mean())
+    dT_hat = a*pos + b
+    resid = (dT - dT_hat)
+    r_mean = float(resid.mean()); r_std = float(resid.std() or 0.0)
+    fouling = bool((r_mean < -0.5) and (abs(r_mean) > 1.5*r_std if r_std>0 else True))
+    return {"residual_mean": round(r_mean,2), "residual_std": round(r_std,2), "fouling_flag": fouling, "notes": "Negative residual implies underperformance."}
+
+
+def analyze_occupancy_inference_co2(sensor_data, baseline_window_hours=24):
+    """
+    Infers occupancy from CO2 dynamics: baseline, rise events, and occupancy fraction.
+
+    Returns: { baseline_ppm, events, occupancy_fraction }
+    """
+    flat = _aggregate_flat(sensor_data)
+    co2_pred = _key_matcher(["co2"]) 
+    keys = _select_keys(flat, co2_pred, False)
+    if not keys: return {"error": "No CO2 series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    s = df.set_index("timestamp").sort_index().resample("5min").mean()["reading_value"].dropna().astype(float)
+    if len(s) < 24*12:  # 24h history at 5-min
+        baseline = float(s.quantile(0.1)) if len(s) else 400.0
+    else:
+        baseline = float(s.rolling(24*12, min_periods=12).quantile(0.1).iloc[-1])
+    rise = s.diff().fillna(0)
+    events = int(((rise > 20) & (s > baseline + 150)).sum())
+    occupied = s > (baseline + 150)
+    occ_frac = float(occupied.mean()) if len(occupied) else 0.0
+    return {"baseline_ppm": round(baseline,1), "events": events, "occupancy_fraction": round(occ_frac,3)}
+
+
+def analyze_co2_levels(sensor_data, threshold=1000):
+    """
+    CO2 level summary across keys; stats + alerts vs threshold (ppm).
+
+    Returns: { mean, p95, max, pct_above, hours_above, latest, threshold }
+    """
+    flat = _aggregate_flat(sensor_data)
+    co2_pred = _key_matcher(["co2"]) 
+    keys = _select_keys(flat, co2_pred, False)
+    if not keys:
+        return {"error": "No CO2 series"}
+    df = _df_from_readings(sum((flat[k] for k in keys), []))
+    if df.empty: return {"error": "Empty CO2 series"}
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    s = df.set_index("timestamp").sort_index().resample("5min").mean()["reading_value"].dropna().astype(float)
+    if s.empty: return {"error": "Empty CO2 series"}
+    thr = float(threshold)
+    pct_above = float((s > thr).mean())
+    hours_above = float((s > thr).mean() * len(s) * (5/60))
+    return {
+        "mean": round(float(s.mean()),1),
+        "p95": round(float(s.quantile(0.95)),1),
+        "max": round(float(s.max()),1),
+        "pct_above": round(pct_above,3),
+        "hours_above": round(hours_above,2),
+        "latest": round(float(s.iloc[-1]),1),
+        "threshold": thr,
+        "unit": "ppm"
+    }
+
+
+def analyze_per_person_ventilation_rate(sensor_data, guideline_lps=10.0, min_occ=1):
+    """
+    Computes ventilation L/s per person using airflow and occupancy; reports mean and compliance.
+
+    Returns: { mean_lps_per_person, p10_lps_per_person, pct_meeting_guideline }
+    """
+    flat = _aggregate_flat(sensor_data)
+    flow_pred = _key_matcher(["air_flow", "airflow", "flow_rate"]) ; occ_pred = _key_matcher(["occupancy", "people", "count"]) 
+    f_keys = _select_keys(flat, flow_pred, False)
+    o_keys = _select_keys(flat, occ_pred, False)
+    if not (f_keys and o_keys):
+        return {"error": "Need airflow and occupancy series"}
+    dfF = _df_from_readings(sum((flat[k] for k in f_keys), []))
+    dfO = _df_from_readings(sum((flat[k] for k in o_keys), []))
+    for d in (dfF, dfO): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfF.sort_values("timestamp"), dfO.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_flow","_occ"))
+    if mm.empty: return {"error": "Could not align airflow/occupancy"}
+    flow_m3s = mm["reading_value_flow"].astype(float)
+    occ = mm["reading_value_occ"].astype(float).clip(lower=float(min_occ))
+    lps_per_person = (flow_m3s * 1000.0) / occ
+    mean_lps = float(lps_per_person.mean())
+    p10 = float(lps_per_person.quantile(0.1))
+    pct_ok = float((lps_per_person >= float(guideline_lps)).mean())
+    return {"mean_lps_per_person": round(mean_lps,1), "p10_lps_per_person": round(p10,1), "pct_meeting_guideline": round(pct_ok,3), "guideline_lps": float(guideline_lps)}
+
+
+def analyze_baseline_energy_regression(sensor_data, base_temp_c=18.0):
+    """
+    Weather/usage baseline (M&V) model: daily kWh ~ CDD + HDD + intercept; returns coefficients and R².
+
+    Returns: { intercept, beta_cdd, beta_hdd, r2, days }
+    """
+    flat = _aggregate_flat(sensor_data)
+    oat_pred = _key_matcher(["outside_air", "outdoor"]) ; t_pred = _key_matcher(["temperature", "temp"]) ; p_pred = _key_matcher(["power", "kw"]) 
+    O = [k for k in flat.keys() if oat_pred(str(k)) and t_pred(str(k))]
+    P = _select_keys(flat, p_pred, False)
+    if not (O and P): return {"error": "Need OAT and power series"}
+    dfO = _df_from_readings(sum((flat[k] for k in O), [])); dfP = _df_from_readings(sum((flat[k] for k in P), []))
+    for d in (dfO, dfP): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    O1 = dfO.set_index("timestamp").sort_index().resample("1H").mean()[["reading_value"]].rename(columns={"reading_value":"OAT"})
+    P1 = dfP.set_index("timestamp").sort_index().resample("1H").mean()[["reading_value"]].rename(columns={"reading_value":"kW"})
+    X = O1.join(P1, how="inner").dropna()
+    if X.empty: return {"error": "No aligned OAT/power"}
+    X["date"] = X.index.date
+    daily = X.groupby("date").agg({"OAT":"mean", "kW":"sum"})
+    daily["kWh"] = daily["kW"]
+    daily["CDD"] = (daily["OAT"] - float(base_temp_c)).clip(lower=0)
+    daily["HDD"] = (float(base_temp_c) - daily["OAT"]).clip(lower=0)
+    if len(daily) < 10: return {"error": "Insufficient daily data"}
+    C = daily[["CDD","HDD"]]
+    y = daily["kWh"]
+    # Solve normal equations approximately assuming low correlation (typical HDD vs CDD)
+    denom_c = float((C["CDD"]**2).sum()) or 1.0
+    denom_h = float((C["HDD"]**2).sum()) or 1.0
+    beta_c = float((C["CDD"]*y).sum())/denom_c
+    beta_h = float((C["HDD"]*y).sum())/denom_h
+    intercept = float((y - beta_c*C["CDD"] - beta_h*C["HDD"]).mean())
+    y_hat = intercept + beta_c*C["CDD"] + beta_h*C["HDD"]
+    ss_res = float(((y - y_hat)**2).sum()); ss_tot = float(((y - y.mean())**2).sum()) or 1.0
+    r2 = 1.0 - ss_res/ss_tot
+    return {"intercept": round(intercept,1), "beta_cdd": round(beta_c,2), "beta_hdd": round(beta_h,2), "r2": round(r2,3), "days": int(len(daily))}
+
+
+def analyze_load_zone_clustering(sensor_data, n_clusters=3, resample="1H"):
+    """
+    Clusters zones by normalized load profiles using simple k-means on 24-hour vectors.
+
+    Returns: { clusters: {zone: cluster_id}, centroids: [[24 values]], inertia }
+    """
+    flat = _aggregate_flat(sensor_data)
+    p_pred = _key_matcher(["power", "kw", "demand"]) 
+    keys = _select_keys(flat, p_pred, False)
+    if not keys: return {"error": "No power series"}
+    profiles = {}
+    for k in keys:
+        df = _df_from_readings(flat[k])
+        if df.empty: continue
+        s = df[["timestamp","reading_value"]].copy(); s["timestamp"] = pd.to_datetime(s["timestamp"], errors="coerce")
+        s = s.dropna(subset=["timestamp"]).set_index("timestamp").sort_index().resample(resample).mean()["reading_value"].dropna()
+        if s.empty: continue
+        daily = s.groupby([s.index.hour]).mean()
+        vec = daily.reindex(range(24)).fillna(method="ffill").fillna(method="bfill")
+        if vec.max() > 0:
+            vec = vec / vec.max()
+        profiles[str(k)] = vec
+    if len(profiles) < max(2, n_clusters):
+        return {"error": "Insufficient zone series for clustering"}
+    M = pd.DataFrame(profiles).T  # zones x 24
+    # init centroids: pick top n by peak at hour with highest variance
+    var_hour = M.var(axis=0).idxmax()
+    seeds = M.sort_values(by=var_hour, ascending=False).head(n_clusters).index.tolist()
+    centroids = [M.loc[s].copy() for s in seeds]
+    for _ in range(5):
+        # assign
+        dists = []
+        for c in centroids:
+            d = ((M - c)**2).sum(axis=1)
+            dists.append(d)
+        D = pd.concat(dists, axis=1)
+        labels = D.idxmin(axis=1)
+        # update
+        new_centroids = []
+        for j in range(len(centroids)):
+            members = M[labels == j]
+            if members.empty:
+                new_centroids.append(centroids[j])
+            else:
+                new_centroids.append(members.mean())
+        centroids = new_centroids
+    inertia = float(D.min(axis=1).sum()) if 'D' in locals() else None
+    clusters = {zone: int(labels.loc[zone]) for zone in labels.index}
+    return {"clusters": clusters, "centroids": [[round(float(x),3) for x in c.tolist()] for c in centroids], "inertia": (round(inertia,2) if inertia is not None else None)}
+
+
+def analyze_predictive_maintenance_fans_pumps(sensor_data):
+    """
+    PdM health score/RUL for fans/pumps using efficiency KPIs, vibration, runtime and alarms.
+
+    Returns: { health_score, rul_days, factors }
+    """
+    flat = _aggregate_flat(sensor_data)
+    vib_pred = _key_matcher(["vibration", "rms", "accel"]) ; temp_pred = _key_matcher(["bearing", "temperature"]) ; alarm_pred = _key_matcher(["alarm", "fault"]) 
+    vib = _df_from_readings(sum((flat[k] for k in _select_keys(flat, vib_pred, False)), [])) if _select_keys(flat, vib_pred, False) else pd.DataFrame()
+    btemp = _df_from_readings(sum((flat[k] for k in _select_keys(flat, temp_pred, False)), [])) if _select_keys(flat, temp_pred, False) else pd.DataFrame()
+    alarms = analyze_alarm_event_summary(sensor_data)
+    eff_fan = analyze_fan_vfd_efficiency(sensor_data)
+    eff_pump = analyze_pump_efficiency(sensor_data)
+    runtime = analyze_runtime_analysis(sensor_data)
+    score = 100.0
+    factors = []
+    if isinstance(eff_fan, dict) and eff_fan.get("sfp_mean"):
+        sfp = float(eff_fan["sfp_mean"])
+        delta = max(0.0, (sfp - 1.5)) * 10
+        score -= delta; factors.append({"sfp_mean": sfp, "penalty": round(delta,1)})
+    if isinstance(eff_pump, dict) and eff_pump.get("spp_mean"):
+        spp = float(eff_pump["spp_mean"])
+        delta = max(0.0, (spp - 2.0)) * 8
+        score -= delta; factors.append({"spp_mean": spp, "penalty": round(delta,1)})
+    if not vib.empty:
+        v = float(vib["reading_value"].astype(float).quantile(0.9))
+        delta = max(0.0, (v - 3.0)) * 5
+        score -= delta; factors.append({"vibration_p90": v, "penalty": round(delta,1)})
+    if not btemp.empty:
+        t = float(btemp["reading_value"].astype(float).quantile(0.9))
+        delta = max(0.0, (t - 80.0)) * 0.5
+        score -= delta; factors.append({"bearing_temp_p90": t, "penalty": round(delta,1)})
+    if isinstance(alarms, dict) and alarms.get("total_events"):
+        delta = min(20.0, float(alarms["total_events"]) * 0.5)
+        score -= delta; factors.append({"alarms": int(alarms["total_events"]), "penalty": round(delta,1)})
+    duty = float(runtime.get("duty_cycle") or 0.5)
+    # RUL heuristic: proportional to score and inverse of duty
+    rul_days = max(7.0, score * 1.0 / max(duty, 0.1))
+    return {"health_score": round(max(0.0, min(100.0, score)),1), "rul_days": round(rul_days,1), "factors": factors}
+
+
+def analyze_predictive_maintenance_chillers_ahus(sensor_data):
+    """
+    PdM health score/RUL for chillers/AHUs using COP degradation, low-ΔT, economizer faults, and alarms.
+
+    Returns: { health_score, rul_days, factors }
+    """
+    cop = analyze_cooling_cop(sensor_data)
+    lowdt = analyze_low_delta_t_syndrome(sensor_data)
+    eco = analyze_economizer_fault_rules(sensor_data)
+    alarms = analyze_alarm_event_summary(sensor_data)
+    runtime = analyze_runtime_analysis(sensor_data)
+    score = 100.0; factors = []
+    if isinstance(cop, dict) and cop.get("cop_proxy_mean"):
+        c = float(cop["cop_proxy_mean"])
+        delta = max(0.0, (2.5 - c)) * 6
+        score -= delta; factors.append({"cop_proxy_mean": c, "penalty": round(delta,1)})
+    if isinstance(lowdt, dict) and lowdt.get("pct_below_3C") is not None:
+        p = float(lowdt["pct_below_3C"])
+        delta = p * 20.0
+        score -= delta; factors.append({"low_dt_pct": p, "penalty": round(delta,1)})
+    if isinstance(eco, dict):
+        open_issues = int(eco.get("does_not_open_count", 0)) + int(eco.get("stuck_open_count", 0))
+        delta = min(15.0, open_issues * 1.0)
+        score -= delta; factors.append({"economizer_issues": open_issues, "penalty": round(delta,1)})
+    if isinstance(alarms, dict) and alarms.get("total_events"):
+        delta = min(20.0, float(alarms["total_events"]) * 0.3)
+        score -= delta; factors.append({"alarms": int(alarms["total_events"]), "penalty": round(delta,1)})
+    duty = float(runtime.get("duty_cycle") or 0.5)
+    rul_days = max(7.0, score * 1.5 / max(duty, 0.1))
+    return {"health_score": round(max(0.0, min(100.0, score)),1), "rul_days": round(rul_days,1), "factors": factors}
+
+
+def analyze_dr_event_impact_analysis(sensor_data, events):
+    """
+    DR shed and rebound quantification for provided event windows.
+
+    events: list of {"start": iso8601, "end": iso8601}
+
+    Returns: { events: [{start, end, shed_kWh, rebound_kWh}], total_shed_kWh, total_rebound_kWh }
+    """
+    flat = _aggregate_flat(sensor_data)
+    p_pred = _key_matcher(["power", "kw"]) 
+    P = _select_keys(flat, p_pred, False)
+    if not P: return {"error": "No power series"}
+    dfP = _df_from_readings(sum((flat[k] for k in P), []))
+    dfP["timestamp"] = pd.to_datetime(dfP["timestamp"], errors="coerce")
+    s = dfP.set_index("timestamp").sort_index().resample("5min").mean()["reading_value"].dropna()
+    if s.empty: return {"error": "Empty power series"}
+    results = []
+    total_shed = 0.0; total_reb = 0.0
+    for ev in (events or []):
+        try:
+            st = pd.to_datetime(ev.get("start")); en = pd.to_datetime(ev.get("end"))
+        except Exception:
+            continue
+        if pd.isna(st) or pd.isna(en) or st >= en: 
+            continue
+        # Baseline: average same times over previous 3 non-event days
+        baseline = []
+        for d in range(1, 4):
+            day = (st.normalize() - pd.Timedelta(days=d))
+            b_win = s.loc[day + (st - st.normalize()): day + (en - en.normalize())]
+            if not b_win.empty: baseline.append(b_win)
+        if not baseline: 
+            continue
+        base = pd.concat(baseline, axis=1).mean(axis=1)
+        act = s.loc[st:en]
+        if act.empty or base.empty: continue
+        # Align index to overlapping stamps
+        idx = act.index.intersection(base.index)
+        shed = float(((base.loc[idx] - act.loc[idx]).clip(lower=0) * (5/60)).sum())
+        # Rebound: next 2 hours vs baseline continuation
+        post_st = en; post_en = en + pd.Timedelta(hours=2)
+        base_post = base.shift( (post_st - st)//pd.Timedelta(minutes=5) ).loc[post_st:post_en]
+        act_post = s.loc[post_st:post_en]
+        idx2 = act_post.index.intersection(base_post.index)
+        rebound = float(((act_post.loc[idx2] - base_post.loc[idx2]).clip(lower=0) * (5/60)).sum())
+        total_shed += shed; total_reb += rebound
+        results.append({"start": st.isoformat(), "end": en.isoformat(), "shed_kWh": round(shed,2), "rebound_kWh": round(rebound,2)})
+    return {"events": results, "total_shed_kWh": round(total_shed,2), "total_rebound_kWh": round(total_reb,2)}
+
+
+def analyze_digital_twin_simulation(sensor_data, scenario=None):
+    """
+    What-if scenario simulation: estimate kWh change for oat_delta (°C) and setpoint_offset (°C).
+
+    scenario: { oat_delta: -3.0, setpoint_offset: -1.0 }
+
+    Returns: { delta_kWh, details }
+    """
+    scenario = scenario or {}
+    oat_delta = float(scenario.get("oat_delta", 0.0))
+    sp_offset = float(scenario.get("setpoint_offset", 0.0))
+    flat = _aggregate_flat(sensor_data)
+    oat_pred = _key_matcher(["outside_air", "outdoor"]) ; t_pred = _key_matcher(["temperature", "temp"]) ; p_pred = _key_matcher(["power", "kw"]) 
+    O = [k for k in flat.keys() if oat_pred(str(k)) and t_pred(str(k))]
+    P = _select_keys(flat, p_pred, False)
+    if not (O and P): return {"error": "Need OAT and power series"}
+    dfO = _df_from_readings(sum((flat[k] for k in O), [])); dfP = _df_from_readings(sum((flat[k] for k in P), []))
+    for d in (dfO, dfP): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    O1 = dfO.set_index("timestamp").sort_index().resample("1H").mean()[["reading_value"]].rename(columns={"reading_value":"OAT"})
+    P1 = dfP.set_index("timestamp").sort_index().resample("1H").mean()[["reading_value"]].rename(columns={"reading_value":"kW"})
+    X = O1.join(P1, how="inner").dropna()
+    if X.empty: return {"error": "No aligned OAT/power"}
+    # Linear slope d(kW)/d(OAT)
+    cov = float(((X["OAT"] - X["OAT"].mean())*(X["kW"] - X["kW"].mean())).sum())
+    var = float(((X["OAT"] - X["OAT"].mean())**2).sum()) or 1.0
+    slope = cov/var
+    # Estimate delta for oat shift
+    delta_oat_kW = slope * oat_delta
+    # Estimate setpoint effect: -2% kW per -1°C offset
+    pct = -0.02 * sp_offset
+    kW_base = float(X["kW"].mean())
+    delta_sp_kW = kW_base * pct
+    # Total delta kWh over the period (per-hour data)
+    hours = float(len(X))
+    delta_kwh = (delta_oat_kW + delta_sp_kW) * hours
+    return {"delta_kWh": round(float(delta_kwh),1), "details": {"slope_kW_per_C": round(slope,3), "oat_delta": oat_delta, "setpoint_offset": sp_offset}}
+
+
+def analyze_mpc_readiness_shadow_mode(sensor_data):
+    """
+    Compare MPC shadow vs baseline; if shadow signals absent, compute heuristic readiness.
+
+    Returns: { method: "shadow"|"heuristic", improvement_pct or readiness_score }
+    """
+    flat = _aggregate_flat(sensor_data)
+    shadow_pred = _key_matcher(["mpc", "shadow"]) ; p_pred = _key_matcher(["power", "kw"]) 
+    S = _select_keys(flat, shadow_pred, False)
+    P = _select_keys(flat, p_pred, False)
+    if S and P:
+        dfS = _df_from_readings(sum((flat[k] for k in S), [])); dfP = _df_from_readings(sum((flat[k] for k in P), []))
+        for d in (dfS, dfP): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+        s = dfS.set_index("timestamp").sort_index().resample("5min").mean()["reading_value"].dropna()
+        p = dfP.set_index("timestamp").sort_index().resample("5min").mean()["reading_value"].dropna()
+        idx = s.index.intersection(p.index)
+        if len(idx) >= 12:
+            mae_shadow = float((s.loc[idx] - p.loc[idx]).abs().mean())
+            mae_baseline = float((p.loc[idx] - p.loc[idx].shift(12)).abs().dropna().mean()) if len(idx) > 12 else None
+            if mae_baseline and mae_baseline > 0:
+                improvement = max(0.0, 1.0 - mae_shadow/mae_baseline)
+                return {"method": "shadow", "improvement_pct": round(float(improvement),3)}
+    # Heuristic readiness: stable control and good setpoint compliance
+    osc = analyze_hunting_oscillation(sensor_data)
+    spc = analyze_setpoint_compliance(sensor_data)
+    readiness = max(0.0, 1.0 - float(osc.get("index") or 0.0)/50.0) * (float(spc.get("pct_within") or 0.5))
+    return {"method": "heuristic", "readiness_score": round(float(readiness),3)}
+
+
+def analyze_fault_signature_library_matching(sensor_data):
+    """
+    Matches anomalies to known fault signatures using existing diagnostics.
+
+    Returns: { matches: [{name, confidence, details}] }
+    """
+    sigs = []
+    lowdt = analyze_low_delta_t_syndrome(sensor_data)
+    if isinstance(lowdt, dict) and lowdt.get("syndrome_flag"):
+        sigs.append({"name": "Low ΔT syndrome", "confidence": 0.8, "details": lowdt})
+    eco = analyze_economizer_fault_rules(sensor_data)
+    if isinstance(eco, dict) and (eco.get("does_not_open_count",0) > 0 or eco.get("stuck_open_count",0) > 0):
+        sigs.append({"name": "Economizer fault", "confidence": 0.7, "details": eco})
+    sim = analyze_simultaneous_heating_cooling(sensor_data)
+    if isinstance(sim, dict) and (sim.get("overlap_pct",0) > 0.1):
+        sigs.append({"name": "Simultaneous heating & cooling", "confidence": 0.75, "details": sim})
+    act = analyze_actuator_stiction(sensor_data)
+    if isinstance(act, dict) and act.get("flag"):
+        sigs.append({"name": "Actuator stiction", "confidence": 0.6, "details": act})
+    return {"matches": sigs}
+
+
+def analyze_sat_residual_analysis(sensor_data):
+    """
+    Expected vs actual SAT residuals using mixing estimate: SAT - MAT_expected.
+
+    Returns: { residual_mean, residual_std, high_residual_pct }
+    """
+    flat = _aggregate_flat(sensor_data)
+    s_pred = _key_matcher(["supply_air"]) ; m_pred = _key_matcher(["mixed_air", "mix"]) ; r_pred = _key_matcher(["return_air"]) ; o_pred = _key_matcher(["outside_air", "outdoor"]) ; t_pred = _key_matcher(["temperature", "temp"]) 
+    S = [k for k in flat.keys() if s_pred(str(k)) and t_pred(str(k))]
+    M = [k for k in flat.keys() if m_pred(str(k)) and t_pred(str(k))]
+    R = [k for k in flat.keys() if r_pred(str(k)) and t_pred(str(k))]
+    O = [k for k in flat.keys() if o_pred(str(k)) and t_pred(str(k))]
+    if not (S and R and O):
+        return {"error": "Need SAT, RAT, and OAT series"}
+    dfS = _df_from_readings(sum((flat[k] for k in S), []))
+    dfR = _df_from_readings(sum((flat[k] for k in R), []))
+    dfO = _df_from_readings(sum((flat[k] for k in O), []))
+    for d in (dfS, dfR, dfO): d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce")
+    mm = pd.merge_asof(dfS.sort_values("timestamp"), dfR.sort_values("timestamp"), on="timestamp", direction="nearest", tolerance=pd.Timedelta("5min"), suffixes=("_s","_r"))
+    mm = pd.merge_asof(mm.sort_values("timestamp"), dfO.sort_values("timestamp"), on="timestamp", direction="nearest")
+    if mm.empty: return {"error": "Could not align series"}
+    # Estimate OA fraction using RAT-SAT-OAT (assume MAT≈SAT for simple AHUs)
+    RAT = mm["reading_value_r"]; SAT = mm["reading_value_s"]; OAT = mm["reading_value"]
+    denom = (OAT - RAT).replace(0, pd.NA)
+    f = ((SAT - RAT) / denom).clip(lower=0, upper=1)
+    MAT_exp = f * OAT + (1 - f) * RAT
+    resid = SAT - MAT_exp
+    resid = resid.dropna()
+    if resid.empty: return {"error": "No residuals"}
+    return {"residual_mean": round(float(resid.mean()),2), "residual_std": round(float(resid.std() or 0.0),2), "high_residual_pct": round(float((resid.abs() > 2.0).mean()),3)}
+
+
+def analyze_weather_normalized_benchmarking(sensor_data, area_m2=None):
+    """
+    Climate-normalized KPI set for benchmarking: EUI and kWh per degree-day.
+
+    Returns: { eui_kwh_per_m2_yr, kWh_per_CDD, kWh_per_HDD, score }
+    """
+    eui = analyze_eui(sensor_data, area_m2=area_m2) if area_m2 else {"eui_kwh_per_m2_yr": None}
+    wn = analyze_weather_normalization(sensor_data)
+    eui_v = eui.get("eui_kwh_per_m2_yr") if isinstance(eui, dict) else None
+    cdd_v = wn.get("kWh_per_CDD") if isinstance(wn, dict) else None
+    hdd_v = wn.get("kWh_per_HDD") if isinstance(wn, dict) else None
+    # Lower is better; composite score handles None by ignoring missing terms
+    parts = [x for x in [eui_v, cdd_v, hdd_v] if x is not None]
+    score = float(sum(parts)/len(parts)) if parts else None
+    return {"eui_kwh_per_m2_yr": eui_v, "kWh_per_CDD": cdd_v, "kWh_per_HDD": hdd_v, "score": (round(score,1) if score is not None else None)}
