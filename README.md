@@ -336,7 +336,6 @@ Comprehensive documentation is available on GitHub Pages:
 | **Setup Checklist** | Deployment checklist | [SETUP_CHECKLIST.md](SETUP_CHECKLIST.md) |
 | **Models Documentation** | T5 and Decider models | [MODELS.md](MODELS.md) |
 | **T5 GUI Architecture** | Training GUI design | [T5_GUI_ARCHITECTURE.md](T5_GUI_ARCHITECTURE.md) |
-| **Port Fix Documentation** | Chrome ERR_UNSAFE_PORT fix | [T5_TRAINING_PORT_FIX.md](T5_TRAINING_PORT_FIX.md) |
 
 ---
 
