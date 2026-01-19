@@ -14,7 +14,7 @@ Remote deployment note: Both `nl2sparql` and `ollama` can be hosted on separate 
 - Purpose: Convert natural language questions into SPARQL queries.
 - Service: `nl2sparql` on port 6005 (compose + extras overlay).
 - Health: `GET /health`
-- Model: `Transformers/t5_base/trained/checkpoint-3` (Download the files from Huggingface suhasdevmane/nl2sparql-brick )
+- Model: `Transformers/t5_base/trained/checkpoint-3` (Download the files from Huggingface https://huggingface.co/suhasdevmane/nl2sparql-brick/tree/main or search repository suhasdevmane/nl2sparql-brick )
 - Volume: Mount `Transformers/t5_base/trained/checkpoint-3` read‑only into container (see compose)
 - ENV: `MODEL_PATH=/app/checkpoint-3`
 
