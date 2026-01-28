@@ -152,7 +152,7 @@ For detailed multi-building workflows, see [Multi-Building Support](MULTI_BUILDI
 - Docker Compose 2.0+
 - 8GB RAM minimum (16GB recommended)
 - 20GB free disk space
-- Download trained model and all files from Huggingface (https://huggingface.co/suhasdevmane/nl2sparql-brick-t5-base/tree/main) and place it in the checkpoint-3 under the transformers folder. 
+- Download trained model and all files from Huggingface (https://huggingface.co/suhasdevmane/nl2sparql-brick-t5-base/tree/main) and place it in the OntoBot/Transformers/t5_base/trained/checkpoint-3 in the transformers folder. 
 
 **Detailed Prerequisites**: See [Prerequisites](#prerequisites) section below.
 
