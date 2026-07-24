@@ -1,0 +1,90 @@
+/* Dark code block override
+   Apply after the Rouge base theme. Forces uniform dark background with colored syntax.
+*/
+:root {
+  --code-bg: #0d1117; /* GitHub dark */
+  --code-border: #30363d;
+  --code-fg: #c9d1d9;
+  --code-line-num: #6e7681;
+  --code-inline-bg: #1e242b;
+  --code-selection: #264466;
+  --code-token-keyword: #ff7b72;
+  --code-token-string: #a5d6ff;
+  --code-token-number: #f2cc60;
+  --code-token-func: #d2a8ff;
+  --code-token-class: #ffa657;
+  --code-token-attr: #79c0ff;
+  --code-token-comment: #8b949e;
+  --code-token-operator: #ffdfb6;
+  --code-token-punctuation: #c9d1d9;
+}
+
+/* Block code containers */
+pre, pre.highlight, .highlight pre, .highlight code {
+  background: var(--code-bg) !important;
+  color: var(--code-fg) !important;
+  border: 1px solid var(--code-border);
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-x: auto;
+  padding: 0.85rem 1rem;
+}
+
+/* Remove conflicting inner backgrounds */
+.highlight { background: transparent !important; }
+
+/* Inline code */
+code, tt {
+  background: var(--code-inline-bg);
+  color: var(--code-fg);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-size: 0.95em;
+}
+
+/* Line numbers (if present via plugin) */
+pre .lineno, pre .line-number, .rouge-gutter {
+  color: var(--code-line-num) !important;
+  user-select: none;
+}
+
+/* Rouge token classes mapping */
+.highlight .k, /* keyword */
+.highlight .kd,
+.highlight .kn,
+.highlight .kp,
+.highlight .kr,
+.highlight .kt { color: var(--code-token-keyword) !important; }
+
+.highlight .s, .highlight .sa, .highlight .sb, .highlight .sc,
+.highlight .sd, .highlight .s2, .highlight .se, .highlight .sh,
+.highlight .si, .highlight .sx, .highlight .sr, .highlight .ss { color: var(--code-token-string) !important; }
+
+.highlight .mi, .highlight .mf, .highlight .mh, .highlight .il, .highlight .mo { color: var(--code-token-number) !important; }
+
+.highlight .nf, .highlight .fm { color: var(--code-token-func) !important; }
+
+.highlight .nc, .highlight .nn, .highlight .bp, .highlight .ne, .highlight .nt { color: var(--code-token-class) !important; }
+
+.highlight .na, .highlight .nb, .highlight .nx { color: var(--code-token-attr) !important; }
+
+.highlight .c, .highlight .c1, .highlight .cm, .highlight .ch, .highlight .cs { color: var(--code-token-comment) !important; font-style: italic; }
+
+.highlight .o, .highlight .ow { color: var(--code-token-operator) !important; }
+
+.highlight .p { color: var(--code-token-punctuation) !important; }
+
+/* Selection */
+pre ::selection, code ::selection { background: var(--code-selection); color: var(--code-fg); }
+
+/* Scrollbar subtle styling (webkit browsers) */
+pre::-webkit-scrollbar { height: 10px; }
+pre::-webkit-scrollbar-track { background: #161b22; }
+pre::-webkit-scrollbar-thumb { background: #30363d; border-radius: 6px; }
+pre::-webkit-scrollbar-thumb:hover { background: #3d444d; }
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  pre, pre.highlight { font-size: 13px; padding: 0.75rem 0.75rem; }
+}
