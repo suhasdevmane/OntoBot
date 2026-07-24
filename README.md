@@ -191,7 +191,7 @@ Detect anomalies in humidity
 docker-compose -f docker-compose.bldg1.yml -f docker-compose.extras.yml up -d --build
 ```
 
-**For detailed getting started guide**: [📖 Quick Start Guide](suhasdevmane.github.io/_docs/quickstart.md)
+**For detailed getting started guide**: [📖 Quick Start Guide](https://aibraincraft.me/OntoBot/docs/quickstart/)
 
 ---
 
@@ -306,12 +306,12 @@ Comprehensive documentation is available on GitHub Pages:
 
 | Document | Description | Link |
 |----------|-------------|------|
-| **Frontend UI Guide** | Complete UI reference, all pages, keyboard shortcuts | [📖 Read](suhasdevmane.github.io/_docs/frontend_ui.md) |
-| **T5 Training Guide** | Model training workflow, GUI usage, API endpoints | [📖 Read](suhasdevmane.github.io/_docs/t5_training_guide.md) |
-| **Backend Services** | All 8 services, API references, integration patterns | [📖 Read](suhasdevmane.github.io/_docs/backend_services.md) |
-| **Multi-Building Guide** | Building differences, switching, portability | [📖 Read](suhasdevmane.github.io/_docs/multi_building.md) |
-| **Quick Start Guide** | 30-minute setup, first conversation, common issues | [📖 Read](suhasdevmane.github.io/_docs/quickstart.md) |
-| **API Reference** | Complete REST API specs with examples | [📖 Read](suhasdevmane.github.io/_docs/api_reference.md) |
+| **Frontend UI Guide** | Complete UI reference, all pages, keyboard shortcuts | [📖 Read](https://aibraincraft.me/OntoBot/docs/frontend_ui/) |
+| **T5 Training Guide** | Model training workflow, GUI usage, API endpoints | [📖 Read](https://aibraincraft.me/OntoBot/docs/t5_training_guide/) |
+| **Backend Services** | All 8 services, API references, integration patterns | [📖 Read](https://aibraincraft.me/OntoBot/docs/backend_services/) |
+| **Multi-Building Guide** | Building differences, switching, portability | [📖 Read](https://aibraincraft.me/OntoBot/docs/multi_building/) |
+| **Quick Start Guide** | 30-minute setup, first conversation, common issues | [📖 Read](https://aibraincraft.me/OntoBot/docs/quickstart/) |
+| **API Reference** | Complete REST API specs with examples | [📖 Read](https://aibraincraft.me/OntoBot/docs/api_reference/) |
 
 ### 📁 Service-Specific READMEs
 
